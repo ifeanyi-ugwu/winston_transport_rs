@@ -95,7 +95,7 @@ impl LogQuery {
                     return false;
                 }
             } else {
-                println!("failed at from check");
+                //println!("failed at from check");
                 return false;
             }
         }
