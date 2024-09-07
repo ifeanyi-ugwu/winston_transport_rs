@@ -12,11 +12,6 @@ pub trait Transport: Any + Send + Sync {
     }
 }
 
-pub struct TransportStreamOptions {
-    pub level: Option<String>,
-    pub format: Option<Format>,
-}
-
 pub trait Queryable: Any + Send + Sync {
     fn query(&self, query: &LogQuery) -> Result<Vec<LogInfo>, String>;
 }
