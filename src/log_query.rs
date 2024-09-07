@@ -1,6 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
 use logform::LogInfo;
 use serde_json::Value;
+use std::str::FromStr;
 
 pub struct LogQuery {
     pub from: Option<DateTime<Utc>>,
@@ -16,6 +17,18 @@ pub struct LogQuery {
 pub enum Order {
     Ascending,
     Descending,
+}
+
+impl FromStr for Order {
+    type Err = String;
+
+    fn from_str(input: &str) -> Result<Order, Self::Err> {
+        match input.to_lowercase().as_str() {
+            "asc" | "ascending" => Ok(Order::Ascending),
+            "desc" | "descending" => Ok(Order::Descending),
+            _ => Err(format!("Invalid order: {}", input)),
+        }
+    }
 }
 
 impl LogQuery {
@@ -52,8 +65,9 @@ impl LogQuery {
         self
     }
 
-    pub fn order(mut self, order: Order) -> Self {
-        self.order = order;
+    pub fn order<S: Into<String>>(mut self, order: S) -> Self {
+        let order_str = order.into();
+        self.order = Order::from_str(&order_str).unwrap_or(Order::Descending);
         self
     }
 
