@@ -10,7 +10,12 @@ pub trait Transport: Any + Send + Sync {
     fn get_format(&self) -> Option<&Format> {
         None
     }
-    fn as_any(&self) -> &dyn Any;
+    fn as_any(&self) -> &dyn Any
+    where
+        Self: Sized,
+    {
+        self
+    }
     fn as_queryable(&self) -> Option<&dyn Queryable> {
         None
     }
