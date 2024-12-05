@@ -12,5 +12,6 @@ categories = ["development-tools::debugging"]
 
 [dependencies]
 chrono = "0.4.38"
+dateparser = "0.2.1"
 logform = "0.1.5"
 serde_json = "1.0.127"

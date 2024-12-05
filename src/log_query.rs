@@ -1,4 +1,5 @@
 use chrono::{DateTime, Duration, Utc};
+use dateparser::parse;
 use logform::LogInfo;
 use serde_json::Value;
 use std::str::FromStr;
@@ -88,13 +89,24 @@ impl LogQuery {
 
     fn extract_timestamp(entry: &LogInfo) -> Option<DateTime<Utc>> {
         if let Some(Value::String(ts_str)) = entry.get_meta("timestamp") {
-            ts_str.parse::<DateTime<Utc>>().ok()
-        } else {
-            None
+            //println!("Found timestamp string: {}", ts_str);
+
+            match parse(ts_str) {
+                Ok(parsed_date) => {
+                    //println!("Parsed date: {}", parsed_date);
+                    return Some(parsed_date.with_timezone(&Utc));
+                }
+                Err(_e) => {
+                    //eprintln!("Failed to parse timestamp '{}': {}", ts_str, e);
+                    return None;
+                }
+            }
         }
+        None
     }
 
     pub fn matches(&self, entry: &LogInfo) -> bool {
+        //println!("checking entry: {:?}", entry);
         // Check level
         if !self.levels.is_empty() && !self.levels.contains(&entry.level) {
             //println!("failed at levels check");
