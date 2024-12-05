@@ -74,9 +74,8 @@ impl LogQuery {
         self
     }
 
-    pub fn order<S: Into<String>>(mut self, order: S) -> Self {
-        let order_str = order.into();
-        self.order = Order::from_str(&order_str).unwrap_or(Order::Descending);
+    pub fn order<S: AsRef<str>>(mut self, order: S) -> Self {
+        self.order = Order::from_str(order.as_ref()).unwrap_or(Order::Descending);
         self
     }
 
