@@ -154,12 +154,19 @@ impl LogQuery {
         }
 
         // Check fields in meta data
-        for field in &self.fields {
-            if !entry.meta.contains_key(field) {
+        /*for field in &self.fields {
+            // Check if the field exists in either meta or as a top-level attribute
+            let field_exists = match field.as_str() {
+                "message" => true, // message always exists
+                "level" => true,   // level always exists
+                _ => entry.meta.contains_key(field),
+            };
+
+            if !field_exists {
                 //println!("failed at field check");
                 return false;
             }
-        }
+        }*/
 
         true
     }
