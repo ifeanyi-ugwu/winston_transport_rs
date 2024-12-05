@@ -1,6 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
 use dateparser::parse;
 use logform::LogInfo;
+use parse_datetime::parse_datetime;
 use serde_json::Value;
 use std::str::FromStr;
 
@@ -46,13 +47,20 @@ impl LogQuery {
         }
     }
 
-    pub fn from(mut self, from: DateTime<Utc>) -> Self {
-        self.from = Some(from);
+    fn parse_time(time_str: &str) -> Option<DateTime<Utc>> {
+        match parse_datetime(time_str) {
+            Ok(parsed_date) => Some(parsed_date.with_timezone(&Utc)),
+            Err(_) => None,
+        }
+    }
+
+    pub fn from<S: AsRef<str>>(mut self, from: S) -> Self {
+        self.from = LogQuery::parse_time(from.as_ref());
         self
     }
 
-    pub fn until(mut self, until: DateTime<Utc>) -> Self {
-        self.until = Some(until);
+    pub fn until<S: AsRef<str>>(mut self, until: S) -> Self {
+        self.until = LogQuery::parse_time(until.as_ref());
         self
     }
 
