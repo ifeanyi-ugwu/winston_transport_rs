@@ -48,10 +48,9 @@ impl LogQuery {
     }
 
     fn parse_time(time_str: &str) -> Option<DateTime<Utc>> {
-        match parse_datetime(time_str) {
-            Ok(parsed_date) => Some(parsed_date.with_timezone(&Utc)),
-            Err(_) => None,
-        }
+        parse_datetime(time_str)
+            .ok()
+            .map(|parsed_date| parsed_date.with_timezone(&Utc))
     }
 
     pub fn from<S: AsRef<str>>(mut self, from: S) -> Self {
@@ -95,21 +94,10 @@ impl LogQuery {
     }
 
     fn extract_timestamp(entry: &LogInfo) -> Option<DateTime<Utc>> {
-        if let Some(Value::String(ts_str)) = entry.get_meta("timestamp") {
-            //println!("Found timestamp string: {}", ts_str);
-
-            match parse(ts_str) {
-                Ok(parsed_date) => {
-                    //println!("Parsed date: {}", parsed_date);
-                    return Some(parsed_date.with_timezone(&Utc));
-                }
-                Err(_e) => {
-                    //eprintln!("Failed to parse timestamp '{}': {}", ts_str, e);
-                    return None;
-                }
-            }
-        }
-        None
+        entry.get_meta("timestamp").and_then(|value| match value {
+            Value::String(ts_str) => parse(ts_str).ok().map(|dt| dt.with_timezone(&Utc)),
+            _ => None,
+        })
     }
 
     pub fn matches(&self, entry: &LogInfo) -> bool {
