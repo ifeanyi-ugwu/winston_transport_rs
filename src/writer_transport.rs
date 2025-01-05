@@ -8,10 +8,10 @@ use std::{any::Any, io::Write, sync::Mutex};
 ///
 /// # Examples
 /// ```
-/// let file = File::create("app.log")?;
-/// let transport = WriterTransport::new(file)
+/// let stdout = std::io::stdout();
+/// let transport = winston_transport::WriterTransport::new(stdout)
 ///     .with_level("INFO")
-///     .with_format(custom_format);
+///     .with_format(logform::json());
 ///
 #[derive(Debug)]
 pub struct WriterTransport<W: Write + Send + Sync> {
