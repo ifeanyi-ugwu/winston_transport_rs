@@ -16,11 +16,7 @@ pub trait Transport: Any + Send + Sync {
     {
         self
     }
-    fn as_queryable(&self) -> Option<&dyn Queryable> {
-        None
+    fn query(&self, _options: &LogQuery) -> Result<Vec<LogInfo>, String> {
+        Ok(Vec::new())
     }
-}
-
-pub trait Queryable: Any + Send + Sync {
-    fn query(&self, query: &LogQuery) -> Result<Vec<LogInfo>, String>;
 }
