@@ -1,8 +1,7 @@
 use crate::log_query::LogQuery;
 use logform::{Format, LogInfo};
-use std::any::Any;
 
-pub trait Transport: Any + Send + Sync {
+pub trait Transport: Send + Sync {
     fn log(&self, info: LogInfo);
     fn flush(&self) -> Result<(), String> {
         Ok(())
