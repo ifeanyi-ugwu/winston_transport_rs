@@ -1,6 +1,6 @@
 use crate::Transport;
 use logform::{Format, LogInfo};
-use std::{any::Any, io::Write, sync::Mutex};
+use std::{io::Write, sync::Mutex};
 
 /// A generic transport for writing logs to any destination implementing the `Write` trait
 ///
@@ -55,8 +55,15 @@ impl<W: Write + Send + Sync + 'static> Transport for WriterTransport<W> {
         self.format.as_ref()
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
+    fn flush(&self) -> Result<(), String> {
+        self.writer
+            .lock()
+            .map_err(|_| "Failed to lock writer".to_string())
+            .and_then(|mut writer| {
+                writer
+                    .flush()
+                    .map_err(|e| format!("Failed to flush file: {}", e))
+            })
     }
 }
 
