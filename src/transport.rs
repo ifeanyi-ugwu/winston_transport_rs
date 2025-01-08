@@ -4,6 +4,9 @@ use std::any::Any;
 
 pub trait Transport: Any + Send + Sync {
     fn log(&self, info: LogInfo);
+    fn flush(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn get_level(&self) -> Option<&String> {
         None
     }
