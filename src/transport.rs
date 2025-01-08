@@ -10,12 +10,6 @@ pub trait Transport: Any + Send + Sync {
     fn get_format(&self) -> Option<&Format> {
         None
     }
-    fn as_any(&self) -> &dyn Any
-    where
-        Self: Sized,
-    {
-        self
-    }
     fn query(&self, _options: &LogQuery) -> Result<Vec<LogInfo>, String> {
         Ok(Vec::new())
     }
