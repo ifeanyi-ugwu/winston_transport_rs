@@ -5,6 +5,9 @@ use parse_datetime::parse_datetime;
 use serde_json::Value;
 use std::str::FromStr;
 
+// todo: the matches, extract_timestamp, and sort methods and functions was
+// created as a result of the FileTransport, there is a high chance it wont be used else where
+// this is as observed when creating the `MongoDDTransport`
 pub struct LogQuery {
     pub from: Option<DateTime<Utc>>,
     pub until: Option<DateTime<Utc>>,
