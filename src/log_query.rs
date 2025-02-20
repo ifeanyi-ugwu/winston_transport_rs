@@ -93,7 +93,7 @@ impl LogQuery {
     }
 
     pub fn search_term<S: AsRef<str>>(mut self, search_term: S) -> Self {
-        self.search_term = Regex::new(&search_term.as_ref()).ok();
+        self.search_term = Some(Regex::new(search_term.as_ref()).unwrap());
         self
     }
 
