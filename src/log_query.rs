@@ -2,6 +2,7 @@ use chrono::{DateTime, Duration, Utc};
 use dateparser::parse;
 use logform::LogInfo;
 use parse_datetime::parse_datetime;
+use regex::Regex;
 use serde_json::Value;
 use std::str::FromStr;
 
@@ -16,7 +17,7 @@ pub struct LogQuery {
     pub order: Order,
     pub levels: Vec<String>,
     pub fields: Vec<String>,
-    pub search_term: Option<String>,
+    pub search_term: Option<Regex>,
 }
 
 pub enum Order {
@@ -91,8 +92,8 @@ impl LogQuery {
         self
     }
 
-    pub fn search_term<S: Into<String>>(mut self, search_term: S) -> Self {
-        self.search_term = Some(search_term.into());
+    pub fn search_term<S: AsRef<str>>(mut self, search_term: S) -> Self {
+        self.search_term = Regex::new(&search_term.as_ref()).ok();
         self
     }
 
@@ -137,9 +138,8 @@ impl LogQuery {
         }
 
         // Check search term in message
-        if let Some(ref search_term) = self.search_term {
-            if !entry.message.contains(search_term) {
-                //println!("failed at search term check");
+        if let Some(ref regex) = self.search_term {
+            if !regex.is_match(&entry.message) {
                 return false;
             }
         }
