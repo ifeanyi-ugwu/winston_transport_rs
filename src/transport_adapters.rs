@@ -132,6 +132,14 @@ impl<W: Write + Send + Sync> Transport for WriterTransport<W> {
     }
 }
 
+impl<W: Write + Send + Sync> Drop for WriterTransport<W> {
+    fn drop(&mut self) {
+        if let Ok(mut writer) = self.writer.lock() {
+            let _ = writer.flush();
+        }
+    }
+}
+
 /// borrowed adapter for using a Writer as a Transport.
 pub struct WriterTransportRef<'a, W: Write + Send + Sync> {
     writer: &'a Mutex<W>,
@@ -183,6 +191,14 @@ impl<'a, W: Write + Send + Sync> Transport for WriterTransportRef<'a, W> {
                     .flush()
                     .map_err(|e| format!("Failed to flush: {}", e))
             })
+    }
+}
+
+impl<'a, W: Write + Send + Sync> Drop for WriterTransportRef<'a, W> {
+    fn drop(&mut self) {
+        if let Ok(mut writer) = self.writer.lock() {
+            let _ = writer.flush();
+        }
     }
 }
 
