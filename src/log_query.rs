@@ -276,4 +276,26 @@ impl LogQuery {
             }
         }
     }
+
+    pub fn project<'a>(&self, entry: &'a LogInfo) -> serde_json::Map<String, Value> {
+        let mut projected = serde_json::Map::new();
+
+        for field in &self.fields {
+            match field.as_str() {
+                "message" => {
+                    projected.insert("message".to_string(), Value::String(entry.message.clone()));
+                }
+                "level" => {
+                    projected.insert("level".to_string(), Value::String(entry.level.clone()));
+                }
+                other => {
+                    if let Some(val) = entry.meta.get(other) {
+                        projected.insert(other.to_string(), val.clone());
+                    }
+                }
+            }
+        }
+
+        projected
+    }
 }
