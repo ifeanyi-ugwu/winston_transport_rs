@@ -1,5 +1,6 @@
 mod log_query;
 mod transport;
+pub mod transport_adapters;
 mod writer_transport;
 
 pub use log_query::{LogQuery, Order};
