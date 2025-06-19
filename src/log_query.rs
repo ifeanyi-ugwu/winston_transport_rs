@@ -299,3 +299,167 @@ impl LogQuery {
         projected
     }
 }
+
+#[cfg(test)]
+mod test {
+    use chrono::{NaiveDate, TimeZone};
+
+    use super::*;
+
+    #[test]
+    fn test_log_query_projection() {
+        use serde_json::json;
+
+        /*let result: Vec<_> = entries
+        .iter()
+        .filter(|e| query.matches(e))
+        .map(|e| query.project(e))
+        .collect();*/
+
+        // Create a sample log entry
+        let log = LogInfo::new("INFO", "User login")
+            .with_meta("user", "alice")
+            .with_meta("ip", "127.0.0.1")
+            .with_meta("timestamp", "2024-04-10T12:34:56Z");
+
+        // Create a LogQuery that selects specific fields
+        let query = LogQuery::new().fields(vec!["message", "user", "ip"]);
+
+        // Apply projection
+        let projected = query.project(&log);
+
+        println!("{:?}", projected);
+
+        // Expected result
+        let mut expected = serde_json::Map::new();
+        expected.insert("message".to_string(), json!("User login"));
+        expected.insert("user".to_string(), json!("alice"));
+        expected.insert("ip".to_string(), json!("127.0.0.1"));
+
+        assert_eq!(projected, expected);
+    }
+
+    #[test]
+    fn test_log_query_from_and_until_with_string() {
+        let query = LogQuery::new()
+            .from("2024-01-01T00:00:00Z")
+            .until("2024-01-02T00:00:00Z");
+
+        assert!(query.from.is_some());
+        assert!(query.until.is_some());
+        assert_eq!(
+            query.from.unwrap(),
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap()
+        );
+        assert_eq!(
+            query.until.unwrap(),
+            Utc.with_ymd_and_hms(2024, 1, 2, 0, 0, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_log_query_from_and_until_with_datetime() {
+        let from_dt = Utc.with_ymd_and_hms(2023, 1, 1, 0, 0, 0).unwrap();
+        let until_dt = Utc.with_ymd_and_hms(2023, 1, 2, 0, 0, 0).unwrap();
+
+        let query = LogQuery::new().from(from_dt).until(until_dt);
+
+        assert!(query.from.is_some());
+        assert!(query.until.is_some());
+        assert_eq!(query.from.unwrap(), from_dt);
+        assert_eq!(query.until.unwrap(), until_dt);
+    }
+
+    // NEW TEST: Validate that `from` and `until` can handle types that are `Into<DateTime<Utc>>`
+    // by explicitly calling `.into()` on them first. This invalidates the need for `from_datetime`.
+    #[test]
+    fn test_from_and_until_handle_into_datetime_via_explicit_into() {
+        // A simple custom struct that implements `Into<DateTime<Utc>>`
+        struct MyCustomTimeInput {
+            year: i32,
+            month: u32,
+            day: u32,
+            hour: u32,
+            minute: u32,
+            second: u32,
+        }
+
+        impl Into<DateTime<Utc>> for MyCustomTimeInput {
+            fn into(self) -> DateTime<Utc> {
+                let naive = NaiveDate::from_ymd_opt(self.year, self.month, self.day)
+                    .unwrap()
+                    .and_hms_opt(self.hour, self.minute, self.second)
+                    .unwrap();
+                Utc.from_utc_datetime(&naive)
+            }
+        }
+
+        // Create an instance of our custom type
+        let custom_from = MyCustomTimeInput {
+            year: 2021,
+            month: 1,
+            day: 15,
+            hour: 8,
+            minute: 30,
+            second: 0,
+        };
+
+        let custom_until = MyCustomTimeInput {
+            year: 2021,
+            month: 1,
+            day: 16,
+            hour: 9,
+            minute: 0,
+            second: 0,
+        };
+
+        // Convert custom type to DateTime<Utc> using .into() BEFORE passing to `from`/`until`
+        let from_utc: DateTime<Utc> = custom_from.into();
+        let until_utc: DateTime<Utc> = custom_until.into();
+
+        let query = LogQuery::new()
+            .from(from_utc) // This works because `from_utc` is DateTime<Utc>, which implements IntoDateTimeOption
+            .until(until_utc); // Same here
+
+        assert!(query.from.is_some());
+        assert!(query.until.is_some());
+        assert_eq!(
+            query.from.unwrap(),
+            Utc.with_ymd_and_hms(2021, 1, 15, 8, 30, 0).unwrap()
+        );
+        assert_eq!(
+            query.until.unwrap(),
+            Utc.with_ymd_and_hms(2021, 1, 16, 9, 0, 0).unwrap()
+        );
+
+        // You could also do it inline:
+        let query2 = LogQuery::new()
+            .from(Into::<DateTime<Utc>>::into(MyCustomTimeInput {
+                year: 2020,
+                month: 1,
+                day: 1,
+                hour: 0,
+                minute: 0,
+                second: 0,
+            }))
+            .until(Into::<DateTime<Utc>>::into(MyCustomTimeInput {
+                year: 2020,
+                month: 1,
+                day: 2,
+                hour: 0,
+                minute: 0,
+                second: 0,
+            }));
+
+        assert!(query2.from.is_some());
+        assert!(query2.until.is_some());
+        assert_eq!(
+            query2.from.unwrap(),
+            Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap()
+        );
+        assert_eq!(
+            query2.until.unwrap(),
+            Utc.with_ymd_and_hms(2020, 1, 2, 0, 0, 0).unwrap()
+        );
+    }
+}
