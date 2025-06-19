@@ -108,6 +108,29 @@ impl From<isize> for Order {
     }
 }
 
+// Helper trait to allow conversion from various types to Option<DateTime<Utc>>
+pub trait IntoDateTimeOption {
+    fn into_datetime_option(self) -> Option<DateTime<Utc>>;
+}
+
+impl IntoDateTimeOption for DateTime<Utc> {
+    fn into_datetime_option(self) -> Option<DateTime<Utc>> {
+        Some(self)
+    }
+}
+
+impl IntoDateTimeOption for &str {
+    fn into_datetime_option(self) -> Option<DateTime<Utc>> {
+        LogQuery::parse_time(self)
+    }
+}
+
+impl IntoDateTimeOption for String {
+    fn into_datetime_option(self) -> Option<DateTime<Utc>> {
+        LogQuery::parse_time(&self)
+    }
+}
+
 impl LogQuery {
     pub fn new() -> Self {
         LogQuery {
@@ -128,15 +151,25 @@ impl LogQuery {
             .map(|parsed_date| parsed_date.with_timezone(&Utc))
     }
 
-    pub fn from<S: AsRef<str>>(mut self, from: S) -> Self {
-        self.from = LogQuery::parse_time(from.as_ref());
+    pub fn from<T: IntoDateTimeOption>(mut self, from: T) -> Self {
+        self.from = from.into_datetime_option();
         self
     }
 
-    pub fn until<S: AsRef<str>>(mut self, until: S) -> Self {
-        self.until = LogQuery::parse_time(until.as_ref());
+    pub fn until<T: IntoDateTimeOption>(mut self, until: T) -> Self {
+        self.until = until.into_datetime_option();
         self
     }
+
+    /*pub fn from_datetime<T: Into<DateTime<Utc>>>(mut self, from_time: T) -> Self {
+        self.from = Some(from_time.into());
+        self
+    }
+
+    pub fn until_datetime<T: Into<DateTime<Utc>>>(mut self, until_time: T) -> Self {
+        self.until = Some(until_time.into());
+        self
+    }*/
 
     pub fn limit(mut self, limit: usize) -> Self {
         self.limit = Some(limit);
