@@ -37,6 +37,77 @@ impl FromStr for Order {
     }
 }
 
+impl From<&str> for Order {
+    fn from(s: &str) -> Self {
+        Order::from_str(s).unwrap_or(Order::Descending)
+    }
+}
+
+impl From<String> for Order {
+    fn from(s: String) -> Self {
+        Order::from_str(&s).unwrap_or(Order::Descending)
+    }
+}
+
+impl From<i8> for Order {
+    fn from(n: i8) -> Self {
+        if n == 1 {
+            Order::Ascending
+        } else {
+            Order::Descending
+        }
+    }
+}
+impl From<i16> for Order {
+    fn from(n: i16) -> Self {
+        if n == 1 {
+            Order::Ascending
+        } else {
+            Order::Descending
+        }
+    }
+}
+
+impl From<i32> for Order {
+    fn from(n: i32) -> Self {
+        if n == 1 {
+            Order::Ascending
+        } else {
+            Order::Descending
+        }
+    }
+}
+
+impl From<i64> for Order {
+    fn from(n: i64) -> Self {
+        if n == 1 {
+            Order::Ascending
+        } else {
+            Order::Descending
+        }
+    }
+}
+
+impl From<i128> for Order {
+    fn from(n: i128) -> Self {
+        if n == 1 {
+            Order::Ascending
+        } else {
+            Order::Descending
+        }
+    }
+}
+
+impl From<isize> for Order {
+    fn from(n: isize) -> Self {
+        if n == 1 {
+            Order::Ascending
+        } else {
+            Order::Descending
+        }
+    }
+}
+
 impl LogQuery {
     pub fn new() -> Self {
         LogQuery {
@@ -77,8 +148,8 @@ impl LogQuery {
         self
     }
 
-    pub fn order<S: AsRef<str>>(mut self, order: S) -> Self {
-        self.order = Order::from_str(order.as_ref()).unwrap_or(Order::Descending);
+    pub fn order<S: Into<Order>>(mut self, order: S) -> Self {
+        self.order = order.into();
         self
     }
 
