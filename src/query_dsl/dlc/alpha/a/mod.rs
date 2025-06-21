@@ -157,7 +157,7 @@ mod tests {
             "user.status",
             FieldLogic::new(LogicalOperator::Or)
                 .with_node(FieldComparison::eq("active"))
-                .with_node(FieldComparison::gt("pending")),
+                .with_node(FieldComparison::eq("pending")),
         );
 
         let full_query = QueryLogicNode::new(LogicalOperator::And)
