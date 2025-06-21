@@ -9,6 +9,7 @@ use std::str::FromStr;
 // todo: the matches, extract_timestamp, and sort methods and functions was
 // created as a result of the FileTransport, there is a high chance it wont be used else where
 // this is as observed when creating the `MongoDDTransport`
+#[derive(Debug, Clone)]
 pub struct LogQuery {
     pub from: Option<DateTime<Utc>>,
     pub until: Option<DateTime<Utc>>,
@@ -20,6 +21,7 @@ pub struct LogQuery {
     pub search_term: Option<Regex>,
 }
 
+#[derive(Debug, Clone)]
 pub enum Order {
     Ascending,
     Descending,
