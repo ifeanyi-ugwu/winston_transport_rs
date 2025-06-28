@@ -3,6 +3,11 @@ use logform::{Format, LogInfo};
 
 pub trait Transport: Send + Sync {
     fn log(&self, info: LogInfo);
+    fn log_batch(&self, logs: Vec<LogInfo>) {
+        for log_info in logs {
+            self.log(log_info);
+        }
+    }
     fn flush(&self) -> Result<(), String> {
         Ok(())
     }
