@@ -13,6 +13,10 @@ use std::{io::Write, sync::Mutex};
 ///     .with_level("INFO")
 ///     .with_format(logform::json());
 ///
+#[deprecated(
+    since = "0.4.3",
+    note = "Use `winston_transport::transport_adapters::WriterTransport` instead."
+)]
 #[derive(Debug)]
 pub struct WriterTransport<W: Write + Send + Sync> {
     writer: Mutex<W>,
