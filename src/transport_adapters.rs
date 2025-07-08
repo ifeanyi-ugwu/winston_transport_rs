@@ -112,6 +112,26 @@ impl<W: Write + Send + Sync> Transport for WriterTransport<W> {
         }
     }
 
+    fn log_batch(&self, infos: Vec<LogInfo>) {
+        if infos.is_empty() {
+            return;
+        }
+
+        if let Ok(mut writer) = self.writer.lock() {
+            for info in infos {
+                if let Err(e) = writeln!(writer, "{}", info.message) {
+                    eprintln!(
+                        "Failed to write log entry in batch to WriterTransport: {}",
+                        e
+                    );
+                    // Continue on error for resilience
+                }
+            }
+        } else {
+            eprintln!("Failed to acquire writer lock for WriterTransport batch logging");
+        }
+    }
+
     fn get_level(&self) -> Option<&String> {
         self.level.as_ref()
     }
@@ -171,6 +191,26 @@ impl<'a, W: Write + Send + Sync> Transport for WriterTransportRef<'a, W> {
     fn log(&self, info: LogInfo) {
         if let Ok(mut writer) = self.writer.lock() {
             let _ = writeln!(writer, "{}", info.message);
+        }
+    }
+
+    fn log_batch(&self, infos: Vec<LogInfo>) {
+        if infos.is_empty() {
+            return;
+        }
+
+        if let Ok(mut writer) = self.writer.lock() {
+            for info in infos {
+                if let Err(e) = writeln!(writer, "{}", info.message) {
+                    eprintln!(
+                        "Failed to write log entry in batch to WriterTransportRef: {}",
+                        e
+                    );
+                    // Continue on error for resilience
+                }
+            }
+        } else {
+            eprintln!("Failed to acquire writer lock for WriterTransportRef batch logging");
         }
     }
 
