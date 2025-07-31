@@ -1,89 +1,106 @@
 # winston_transport
 
-A Rust crate providing a winston-transport implementation for Rust applications. This crate offers logging transport capabilities inspired by the popular Node.js winston logging library, enabling flexible and extensible logging solutions.
+A flexible, extensible logging transport library for Rust, designed to provide various transport implementations with support for batching, asynchronous threading, and adapter interoperability.
+
+## Overview
+
+`winston_transport` offers a modular system for logging transports, enabling efficient and customizable log handling. It provides core abstractions and multiple transport implementations, including batch processing and threaded asynchronous logging. Additionally, it includes adapters to seamlessly convert between the `Transport` trait and standard Rust `Write` trait, facilitating integration with existing IO systems.
 
 ## Features
 
-- Logging transport implementation compatible with Rust logging ecosystems.
-- Includes modules for query building (`query_dsl`) with a type-safe, composable DSL for filtering structured data (e.g., `serde_json::Value`).
-- Supports complex query construction inspired by MongoDB query syntax.
-- Provides various transport adapters and writer transports for flexible logging output.
-
-## Installation
-
-Add the following to your `Cargo.toml`:
-
-```toml
-[dependencies]
-winston_transport = "0.4.0"
-```
-
-Then run:
-
-```bash
-cargo build
-```
+- Core `Transport` trait defining the logging interface.
+- `BatchedTransport` for efficient batch processing of log messages.
+- `ThreadedTransport` for non-blocking, asynchronous logging on background threads.
+- Adapters to convert between `Transport` and `Write` traits (both owned and borrowed).
+- Support for querying logs via `LogQuery`.
+- Configurable batching parameters such as batch size and flush timing.
 
 ## Usage
 
-Basic usage example:
+### Creating a Custom Transport
+
+To create a custom transport, implement the `Transport` trait:
 
 ```rust
-use winston_transport::{Transport, WriterTransport, LogQuery, Order};
-use logform::{Format, LogInfo};
+use winston_transport::Transport;
+use logform::LogInfo;
 
-fn main() {
-    // Example: create a transport and use it for logging
-    let transport = WriterTransport::new();
-    // Use transport as needed...
+struct MyTransport;
 
-    // Example: create a log query
-    let query = LogQuery::new().order(Order::Ascending);
-    // Use query to filter logs...
+impl Transport for MyTransport {
+    fn log(&self, info: LogInfo) {
+        // Implement your logging logic here
+        println!("{}: {}", info.level, info.message);
+    }
 }
 ```
 
-### Using the `query_dsl` Module
-
-The `query_dsl` module provides a domain-specific language for building type-safe, composable queries against structured data like `serde_json::Value`.
-
-Example:
+### Basic Transport Usage
 
 ```rust
-use query_dsl::prelude::*;
-use serde_json::json;
+use winston_transport::{Transport, threaded_transport::ThreadedTransport};
+use logform::LogInfo;
 
 fn main() {
-    let query = and!(
-        field_query!("user.age", gt(18)),
-        or!(
-            field_query!("user.status", eq("active")),
-            field_query!("user.role", eq("admin"))
-        )
-    );
+    let my_transport = MyTransport;
+    let threaded = ThreadedTransport::new(my_transport);
 
-    let data1 = json!({ "user": { "age": 25, "status": "active" } });
-    let data2 = json!({ "user": { "age": 30, "role": "admin" } });
-    let data3 = json!({ "user": { "age": 15, "status": "inactive" } });
-
-    println!("Data 1 matches: {}", query.evaluate(&data1)); // true
-    println!("Data 2 matches: {}", query.evaluate(&data2)); // true
-    println!("Data 3 matches: {}", query.evaluate(&data3)); // false
+    threaded.log(LogInfo::new("INFO", "This is a log message"));
+    threaded.flush().expect("Failed to flush logs");
 }
 ```
 
-## Documentation
+### Using BatchedTransport
 
-For detailed documentation, visit [https://docs.rs/winston_transport](https://docs.rs/winston_transport).
+```rust
+use winston_transport::{batch_transport::{BatchedTransport, BatchConfig}, Transport};
+use logform::LogInfo;
+use std::time::Duration;
 
-## Repository
+fn main() {
+    let base_transport = MyTransport;
+    let config = BatchConfig {
+        max_batch_size: 50,
+        max_batch_time: Duration::from_millis(200),
+        flush_on_drop: true,
+    };
 
-Source code and issue tracking available at [https://github.com/ifeanyi-ugwu/winston_transport_rs](https://github.com/ifeanyi-ugwu/winston_transport_rs).
+    let batched = BatchedTransport::with_config(base_transport, config);
+
+    batched.log(LogInfo::new("INFO", "Batched log message"));
+    batched.flush().expect("Flush failed");
+}
+```
+
+### Using Transport Adapters
+
+Convert a `Transport` into a `Write`:
+
+```rust
+use winston_transport::transport_adapters::IntoTransportWriter;
+use std::io::Write;
+
+fn example<T: winston_transport::Transport + Sized>(transport: T) {
+    let mut writer = transport.into_writer();
+    writeln!(writer, "Log message via writer").unwrap();
+}
+```
+
+Convert a `Write` into a `Transport`:
+
+```rust
+use winston_transport::transport_adapters::IntoWriterTransport;
+use std::io::stdout;
+
+fn example() {
+    let stdout = stdout();
+    let transport = stdout.into_transport();
+    transport.log(logform::LogInfo::new("INFO", "Log via transport"));
+}
+```
 
 ## License
 
-This project is licensed under the MIT License.
-
-## Author
-
-ifeanyi ugwu
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+}
+}
