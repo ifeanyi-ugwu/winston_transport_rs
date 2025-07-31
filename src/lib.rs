@@ -3,7 +3,6 @@ mod log_query;
 pub mod query_dsl;
 pub mod threaded_transport;
 mod transport;
-//TODO: rename module for clarity
 pub mod transport_adapters;
 mod writer_transport;
 

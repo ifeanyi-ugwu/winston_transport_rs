@@ -1,3 +1,14 @@
+//! This module contains adapter implementations for converting between
+//! `Transport` and `Write` traits, both for owned and borrowed scenarios.
+//!
+//! The adapters allow seamless interoperability:
+//! - `TransportWriter` - use any Transport as a Writer
+//! - `WriterTransport` - use any Writer as a Transport
+//! - Both owned and borrowed variants are provided
+//!
+//! Extension traits provide convenient `.into_writer()`, `.as_writer()`,
+//! `.into_transport()`, and `.as_transport()` methods.
+
 use crate::Transport;
 use logform::{Format, LogInfo};
 use std::{
