@@ -119,10 +119,12 @@ where
         let mut batch = Vec::new();
         let mut last_flush = Instant::now();
 
-        let flush_batch = |batch: &mut Vec<L>| {
+        let flush_batch = |batch: &mut Vec<L>| -> Result<(), String> {
             if !batch.is_empty() {
                 transport.log_batch(batch.drain(..).collect());
-                let _ = transport.flush();
+                transport.flush() // propagate flush error
+            } else {
+                Ok(())
             }
         };
 
@@ -148,33 +150,33 @@ where
                 Ok(BatchMessage::Log(info)) => {
                     batch.push(info);
                     if batch.len() >= config.max_batch_size {
-                        flush_batch(&mut batch);
+                        let _ = flush_batch(&mut batch);
                         last_flush = Instant::now();
                     }
                 }
                 Ok(BatchMessage::Flush(response_sender)) => {
-                    flush_batch(&mut batch);
+                    let result = flush_batch(&mut batch);
                     last_flush = Instant::now();
-                    let _ = response_sender.send(Ok(()));
+                    let _ = response_sender.send(result);
                 }
                 Ok(BatchMessage::Query(query, response_sender)) => {
-                    flush_batch(&mut batch);
+                    let _ = flush_batch(&mut batch);
                     last_flush = Instant::now();
                     let result = transport.query(&query);
                     let _ = response_sender.send(result);
                 }
                 Ok(BatchMessage::Shutdown) => {
-                    flush_batch(&mut batch);
+                    let _ = flush_batch(&mut batch);
                     break;
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if !batch.is_empty() && last_flush.elapsed() >= config.max_batch_time {
-                        flush_batch(&mut batch);
+                        let _ = flush_batch(&mut batch);
                         last_flush = Instant::now();
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    flush_batch(&mut batch);
+                    let _ = flush_batch(&mut batch);
                     break;
                 }
             }
@@ -252,6 +254,23 @@ where
                 let _ = self.sender.send(BatchMessage::Shutdown);
                 let _ = handle.join();
             }
+        }
+    }
+}
+
+impl<T, L> Clone for BatchedTransport<T, L>
+where
+    T: Transport<L> + Send + 'static,
+    L: Send + 'static,
+{
+    fn clone(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            thread_handle: None, // Don't clone thread handle because thread is owned by original
+            level: self.level.clone(),
+            format: self.format.clone(),
+            config: self.config.clone(),
+            _phantom: PhantomData,
         }
     }
 }
@@ -402,5 +421,194 @@ mod tests {
         let messages = mock_clone.get_messages();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0], "Message 1");
+    }
+
+    /// MockTransport with query support and error injection
+    #[derive(Clone)]
+    struct MockQueryTransport {
+        messages: Arc<Mutex<Vec<String>>>,
+        log_calls: Arc<Mutex<Vec<Instant>>>,
+        should_fail: Arc<Mutex<bool>>,
+        level: Arc<String>,
+    }
+
+    impl MockQueryTransport {
+        fn new() -> Self {
+            Self {
+                messages: Arc::new(Mutex::new(Vec::new())),
+                log_calls: Arc::new(Mutex::new(Vec::new())),
+                should_fail: Arc::new(Mutex::new(false)),
+                level: Arc::new("INFO".to_string()),
+            }
+        }
+
+        fn fail(&self, should_fail: bool) {
+            *self.should_fail.lock().unwrap() = should_fail;
+        }
+    }
+
+    impl Transport<LogInfo> for MockQueryTransport {
+        fn log(&self, info: LogInfo) {
+            /*if *self.should_fail.lock().unwrap() {
+                // Simulate failure by panicking, or ignore to simulate silent failure if desired
+                panic!("Transport log failure");
+            }*/
+            self.messages.lock().unwrap().push(info.message);
+            self.log_calls.lock().unwrap().push(Instant::now());
+        }
+
+        fn log_batch(&self, batch: Vec<LogInfo>) {
+            /*if *self.should_fail.lock().unwrap() {
+                panic!("Transport batch log failure");
+            }*/
+            let mut messages = self.messages.lock().unwrap();
+            let mut log_calls = self.log_calls.lock().unwrap();
+
+            for info in batch {
+                messages.push(info.message);
+                log_calls.push(Instant::now());
+            }
+        }
+
+        fn flush(&self) -> Result<(), String> {
+            if *self.should_fail.lock().unwrap() {
+                Err("Flush failed".to_string())
+            } else {
+                Ok(())
+            }
+        }
+
+        fn get_level(&self) -> Option<&String> {
+            Some(&self.level)
+        }
+
+        fn get_format(&self) -> Option<Arc<dyn Format<Input = LogInfo> + Send + Sync>> {
+            None
+        }
+
+        fn query(&self, _options: &LogQuery) -> Result<Vec<LogInfo>, String> {
+            if *self.should_fail.lock().unwrap() {
+                Err("Query failed".to_string())
+            } else {
+                // Return a dummy vector of logs for testing
+                let logs = self
+                    .messages
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|msg| LogInfo::new("INFO", msg))
+                    .collect();
+                Ok(logs)
+            }
+        }
+    }
+
+    #[test]
+    fn test_query_functionality() {
+        let mock = MockQueryTransport::new();
+        let batched = mock.clone().into_batched();
+
+        batched.log(LogInfo::new("INFO", "Test query 1"));
+        batched.flush().unwrap();
+
+        let query = LogQuery::default();
+        let result = batched.query(&query).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].message, "Test query 1");
+    }
+
+    #[test]
+    fn test_error_handling_flush() {
+        let mock = MockQueryTransport::new();
+        mock.fail(true); // Inject failure
+
+        let batched = mock.into_batched();
+
+        batched.log(LogInfo::new("INFO", "Should fail"));
+
+        // Flush returns error because transport is failing
+        let flush_result = batched.flush();
+
+        assert!(flush_result.is_err());
+        assert_eq!(flush_result.unwrap_err(), "Flush failed");
+    }
+
+    #[test]
+    fn test_error_handling_query() {
+        let mock = MockQueryTransport::new();
+        let batched = mock.clone().into_batched();
+
+        mock.fail(true); // Inject failure
+
+        let query = LogQuery::default();
+
+        let result = batched.query(&query);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Query failed");
+    }
+
+    #[test]
+    fn test_concurrent_access() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let mock = MockTransport::new();
+        let batched = mock.clone().into_batched_with_config(BatchConfig {
+            max_batch_size: 10,
+            max_batch_time: Duration::from_secs(1),
+            flush_on_drop: true,
+        });
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+
+        for i in 0..5 {
+            let batched = batched.clone();
+            let counter = counter.clone();
+            handles.push(thread::spawn(move || {
+                for j in 0..20 {
+                    let msg = format!("Thread {} - Message {}", i, j);
+                    batched.log(LogInfo::new("INFO", &msg));
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Wait a bit for the batch thread to flush
+        thread::sleep(Duration::from_millis(500));
+
+        let messages = mock.get_messages();
+        assert_eq!(messages.len(), counter.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_shutdown_behavior_with_pending_messages() {
+        let mock = MockTransport::new();
+        let config = BatchConfig {
+            max_batch_size: 100, // large batch size to avoid automatic flush on batch count
+            max_batch_time: Duration::from_secs(10), // long timeout
+            flush_on_drop: true,
+        };
+
+        let batched = mock.clone().into_batched_with_config(config);
+
+        batched.log(LogInfo::new("INFO", "Pending message 1"));
+        batched.log(LogInfo::new("INFO", "Pending message 2"));
+
+        // Drop batched, which should flush pending messages because flush_on_drop = true
+        drop(batched);
+
+        // Give some time for thread to join
+        std::thread::sleep(Duration::from_millis(200));
+
+        let messages = mock.get_messages();
+        assert_eq!(messages.len(), 2);
+        assert!(messages.contains(&"Pending message 1".to_string()));
+        assert!(messages.contains(&"Pending message 2".to_string()));
     }
 }
