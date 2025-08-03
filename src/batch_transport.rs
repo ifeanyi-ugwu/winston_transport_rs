@@ -1,5 +1,5 @@
 use crate::{log_query::LogQuery, Transport};
-use logform::{Format, LogInfo};
+use logform::Format;
 use std::{
     marker::PhantomData,
     sync::{
@@ -33,29 +33,31 @@ impl Default for BatchConfig {
 
 /// Internal message types for the batch thread
 #[derive(Debug)]
-enum BatchMessage {
-    Log(LogInfo),
+enum BatchMessage<L> {
+    Log(L),
     Flush(Sender<Result<(), String>>),
-    Query(LogQuery, Sender<Result<Vec<LogInfo>, String>>),
+    Query(LogQuery, Sender<Result<Vec<L>, String>>),
     Shutdown,
 }
 
 /// A transport wrapper that batches log messages before sending them to the underlying transport
-pub struct BatchedTransport<T>
+pub struct BatchedTransport<T, L>
 where
-    T: Transport<LogInfo> + Send + 'static,
+    T: Transport<L> + Send + 'static,
+    L: Send + 'static,
 {
-    sender: mpsc::Sender<BatchMessage>,
+    sender: Sender<BatchMessage<L>>,
     thread_handle: Option<JoinHandle<()>>,
     level: Option<String>,
-    format: Option<Arc<dyn Format<Input = LogInfo> + Send + Sync>>,
+    format: Option<Arc<dyn Format<Input = L> + Send + Sync>>,
     config: BatchConfig,
-    _phantom: PhantomData<T>,
+    _phantom: PhantomData<(T, L)>,
 }
 
-impl<T> BatchedTransport<T>
+impl<T, L> BatchedTransport<T, L>
 where
-    T: Transport<LogInfo> + Send + 'static,
+    T: Transport<L> + Send + 'static,
+    L: Send + 'static,
 {
     /// Creates a new BatchedTransport with default configuration
     pub fn new(transport: T) -> Self {
@@ -109,21 +111,22 @@ where
         }
     }
 
-    /// The main batching loop running on the background thread
-    fn run_batch_thread(transport: T, receiver: mpsc::Receiver<BatchMessage>, config: BatchConfig) {
+    fn run_batch_thread(
+        transport: T,
+        receiver: mpsc::Receiver<BatchMessage<L>>,
+        config: BatchConfig,
+    ) {
         let mut batch = Vec::new();
         let mut last_flush = Instant::now();
 
-        let flush_batch = |batch: &mut Vec<LogInfo>| {
+        let flush_batch = |batch: &mut Vec<L>| {
             if !batch.is_empty() {
-                // Use log_batch with the current batch
                 transport.log_batch(batch.drain(..).collect());
                 let _ = transport.flush();
             }
         };
 
         loop {
-            // Calculate timeout for receiving messages
             let time_since_last_flush = last_flush.elapsed();
             let timeout = if batch.is_empty() {
                 None
@@ -144,7 +147,6 @@ where
             match message_result {
                 Ok(BatchMessage::Log(info)) => {
                     batch.push(info);
-
                     if batch.len() >= config.max_batch_size {
                         flush_batch(&mut batch);
                         last_flush = Instant::now();
@@ -158,7 +160,6 @@ where
                 Ok(BatchMessage::Query(query, response_sender)) => {
                     flush_batch(&mut batch);
                     last_flush = Instant::now();
-
                     let result = transport.query(&query);
                     let _ = response_sender.send(result);
                 }
@@ -198,12 +199,12 @@ where
     }
 }
 
-impl<T> Transport<LogInfo> for BatchedTransport<T>
+impl<T, L> Transport<L> for BatchedTransport<T, L>
 where
-    T: Transport<LogInfo> + Send + 'static,
+    T: Transport<L> + Send + 'static,
+    L: Send + Sync + 'static,
 {
-    fn log(&self, info: LogInfo) {
-        // Queue log for batching; drop if channel full or closed
+    fn log(&self, info: L) {
         let _ = self.sender.send(BatchMessage::Log(info));
     }
 
@@ -223,11 +224,11 @@ where
         self.level.as_ref()
     }
 
-    fn get_format(&self) -> Option<Arc<dyn Format<Input = LogInfo> + Send + Sync>> {
+    fn get_format(&self) -> Option<Arc<dyn Format<Input = L> + Send + Sync>> {
         self.format.clone()
     }
 
-    fn query(&self, options: &LogQuery) -> Result<Vec<LogInfo>, String> {
+    fn query(&self, options: &LogQuery) -> Result<Vec<L>, String> {
         let (response_sender, response_receiver) = mpsc::channel();
 
         self.sender
@@ -240,9 +241,10 @@ where
     }
 }
 
-impl<T> Drop for BatchedTransport<T>
+impl<T, L> Drop for BatchedTransport<T, L>
 where
-    T: Transport<LogInfo> + Send + 'static,
+    T: Transport<L> + Send + 'static,
+    L: Send + 'static,
 {
     fn drop(&mut self) {
         if self.config.flush_on_drop {
@@ -255,14 +257,17 @@ where
 }
 
 /// Extension trait for easily wrapping any transport with batching behavior
-pub trait IntoBatchedTransport: Transport<LogInfo> + Send + Sized + 'static {
+pub trait IntoBatchedTransport<L>: Transport<L> + Send + Sized + 'static
+where
+    L: Send + 'static,
+{
     /// Wraps this transport in a BatchedTransport with default configuration
-    fn into_batched(self) -> BatchedTransport<Self> {
+    fn into_batched(self) -> BatchedTransport<Self, L> {
         BatchedTransport::new(self)
     }
 
     /// Wraps this transport in a BatchedTransport with custom configuration
-    fn into_batched_with_config(self, config: BatchConfig) -> BatchedTransport<Self> {
+    fn into_batched_with_config(self, config: BatchConfig) -> BatchedTransport<Self, L> {
         BatchedTransport::with_config(self, config)
     }
 
@@ -271,57 +276,22 @@ pub trait IntoBatchedTransport: Transport<LogInfo> + Send + Sized + 'static {
         self,
         config: BatchConfig,
         thread_name: String,
-    ) -> BatchedTransport<Self> {
+    ) -> BatchedTransport<Self, L> {
         BatchedTransport::with_thread_name(self, config, thread_name)
     }
 }
 
-impl<T> IntoBatchedTransport for T where T: Transport<LogInfo> + Send + Sized + 'static {}
-
-/// Builder for creating BatchConfig
-pub struct BatchConfigBuilder {
-    max_batch_size: usize,
-    max_batch_time: Duration,
-    flush_on_drop: bool,
-}
-
-impl BatchConfigBuilder {
-    pub fn new() -> Self {
-        let default = BatchConfig::default();
-        Self {
-            max_batch_size: default.max_batch_size,
-            max_batch_time: default.max_batch_time,
-            flush_on_drop: default.flush_on_drop,
-        }
-    }
-
-    pub fn max_batch_size(mut self, size: usize) -> Self {
-        self.max_batch_size = size;
-        self
-    }
-
-    pub fn max_batch_time(mut self, duration: Duration) -> Self {
-        self.max_batch_time = duration;
-        self
-    }
-
-    pub fn flush_on_drop(mut self, flush: bool) -> Self {
-        self.flush_on_drop = flush;
-        self
-    }
-
-    pub fn build(self) -> BatchConfig {
-        BatchConfig {
-            max_batch_size: self.max_batch_size,
-            max_batch_time: self.max_batch_time,
-            flush_on_drop: self.flush_on_drop,
-        }
-    }
+impl<T, L> IntoBatchedTransport<L> for T
+where
+    T: Transport<L> + Send + Sized + 'static,
+    L: Send + 'static,
+{
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use logform::LogInfo;
     use std::{
         sync::{Arc, Mutex},
         time::Duration,
@@ -366,10 +336,11 @@ mod tests {
         let mock = MockTransport::new();
         let mock_clone = mock.clone();
 
-        let config = BatchConfigBuilder::new()
-            .max_batch_size(3)
-            .max_batch_time(Duration::from_secs(10)) // Long time so size triggers first
-            .build();
+        let config = BatchConfig {
+            max_batch_size: 3,
+            max_batch_time: Duration::from_secs(10),
+            flush_on_drop: true,
+        };
 
         let batched = mock.into_batched_with_config(config);
 
@@ -377,13 +348,12 @@ mod tests {
         batched.log(LogInfo::new("INFO", "Message 2"));
         batched.log(LogInfo::new("INFO", "Message 3"));
 
-        // Give the batch thread time to process
+        // Allow thread to process batch
         std::thread::sleep(Duration::from_millis(100));
 
         let messages = mock_clone.get_messages();
         assert_eq!(messages.len(), 3);
 
-        // All should be logged as a batch (3 separate log calls)
         assert_eq!(mock_clone.get_log_call_count(), 3);
     }
 
@@ -392,17 +362,17 @@ mod tests {
         let mock = MockTransport::new();
         let mock_clone = mock.clone();
 
-        let config = BatchConfigBuilder::new()
-            .max_batch_size(100) // Large size so time triggers first
-            .max_batch_time(Duration::from_millis(50))
-            .build();
+        let config = BatchConfig {
+            max_batch_size: 100,
+            max_batch_time: Duration::from_millis(50),
+            flush_on_drop: true,
+        };
 
         let batched = mock.into_batched_with_config(config);
 
         batched.log(LogInfo::new("INFO", "Message 1"));
         batched.log(LogInfo::new("INFO", "Message 2"));
 
-        // Wait for time trigger
         std::thread::sleep(Duration::from_millis(100));
 
         let messages = mock_clone.get_messages();
@@ -416,17 +386,17 @@ mod tests {
         let mock = MockTransport::new();
         let mock_clone = mock.clone();
 
-        let config = BatchConfigBuilder::new()
-            .max_batch_size(100)
-            .max_batch_time(Duration::from_secs(10))
-            .build();
+        let config = BatchConfig {
+            max_batch_size: 100,
+            max_batch_time: Duration::from_secs(10),
+            flush_on_drop: true,
+        };
 
         let batched = mock.into_batched_with_config(config);
 
         batched.log(LogInfo::new("INFO", "Message 1"));
         batched.flush().unwrap();
 
-        // Give time for flush to process
         std::thread::sleep(Duration::from_millis(50));
 
         let messages = mock_clone.get_messages();

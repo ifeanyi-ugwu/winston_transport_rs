@@ -1,5 +1,5 @@
 use crate::{log_query::LogQuery, Transport};
-use logform::{Format, LogInfo};
+use logform::Format;
 use std::{
     marker::PhantomData,
     sync::{
@@ -9,32 +9,33 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-/// Message types for communicating with the background thread
+/// Message types for communicating with the background thread for ThreadedTransport
 #[derive(Debug)]
-enum TransportMessage {
-    Log(LogInfo),
+enum TransportMessage<L> {
+    Log(L),
     Flush(Sender<Result<(), String>>),
-    Query(LogQuery, Sender<Result<Vec<LogInfo>, String>>),
+    Query(LogQuery, Sender<Result<Vec<L>, String>>),
     Shutdown,
 }
 
 /// A transport wrapper that executes all operations on a separate background thread
 /// for non-blocking, asynchronous logging operations.
-pub struct ThreadedTransport<T>
+pub struct ThreadedTransport<T, L>
 where
-    T: Transport<LogInfo> + 'static,
+    T: Transport<L> + 'static,
+    L: Send + 'static,
 {
-    sender: Sender<TransportMessage>,
+    sender: Sender<TransportMessage<L>>,
     thread_handle: Option<JoinHandle<()>>,
-    // Store references to the wrapped transport's level and format for immediate access
     level: Option<String>,
-    format: Option<Arc<dyn Format<Input = LogInfo> + Send + Sync>>,
-    _phantom_data: PhantomData<T>,
+    format: Option<Arc<dyn Format<Input = L> + Send + Sync>>,
+    _phantom_data: PhantomData<(T, L)>,
 }
 
-impl<T> ThreadedTransport<T>
+impl<T, L> ThreadedTransport<T, L>
 where
-    T: Transport<LogInfo> + 'static,
+    T: Transport<L> + 'static,
+    L: Send + 'static,
 {
     /// Creates a new ThreadedTransport that wraps the given transport
     pub fn new(transport: T) -> Self {
@@ -79,8 +80,7 @@ where
         }
     }
 
-    /// The main loop running on the background thread
-    fn run_transport_thread(transport: T, receiver: Receiver<TransportMessage>) {
+    fn run_transport_thread(transport: T, receiver: Receiver<TransportMessage<L>>) {
         while let Ok(message) = receiver.recv() {
             match message {
                 TransportMessage::Log(info) => {
@@ -95,7 +95,6 @@ where
                     let _ = response_sender.send(result);
                 }
                 TransportMessage::Shutdown => {
-                    // Perform final flush before shutting down
                     let _ = transport.flush();
                     break;
                 }
@@ -109,6 +108,7 @@ where
             self.sender
                 .send(TransportMessage::Shutdown)
                 .map_err(|_| "Failed to send shutdown signal")?;
+
             handle
                 .join()
                 .map_err(|_| "Failed to join background thread")?;
@@ -117,12 +117,12 @@ where
     }
 }
 
-impl<T> Transport<LogInfo> for ThreadedTransport<T>
+impl<T, L> Transport<L> for ThreadedTransport<T, L>
 where
-    T: Transport<LogInfo> + 'static,
+    T: Transport<L> + 'static,
+    L: Send + Sync + 'static,
 {
-    fn log(&self, info: LogInfo) {
-        // Non-blocking send — drop message if channel closed or full
+    fn log(&self, info: L) {
         let _ = self.sender.send(TransportMessage::Log(info));
     }
 
@@ -142,11 +142,11 @@ where
         self.level.as_ref()
     }
 
-    fn get_format(&self) -> Option<Arc<dyn Format<Input = LogInfo> + Send + Sync>> {
+    fn get_format(&self) -> Option<Arc<dyn Format<Input = L> + Send + Sync>> {
         self.format.clone()
     }
 
-    fn query(&self, options: &LogQuery) -> Result<Vec<LogInfo>, String> {
+    fn query(&self, options: &LogQuery) -> Result<Vec<L>, String> {
         let (response_sender, response_receiver) = mpsc::channel();
 
         self.sender
@@ -159,9 +159,10 @@ where
     }
 }
 
-impl<T> Drop for ThreadedTransport<T>
+impl<T, L> Drop for ThreadedTransport<T, L>
 where
-    T: Transport<LogInfo> + 'static,
+    T: Transport<L> + 'static,
+    L: Send + 'static,
 {
     fn drop(&mut self) {
         if let Some(handle) = self.thread_handle.take() {
@@ -172,23 +173,32 @@ where
 }
 
 /// Extension trait for easily wrapping any transport with threaded behavior
-pub trait IntoThreadedTransport: Transport<LogInfo> + Sized + 'static {
-    /// Wraps this transport in a ThreadedTransport for non-blocking operations
-    fn into_threaded(self) -> ThreadedTransport<Self> {
+pub trait IntoThreadedTransport<L>: Transport<L> + Sized + 'static
+where
+    L: Send + 'static,
+{
+    /// Wraps this transport in a ThreadedTransport for non-blocking ops
+    fn into_threaded(self) -> ThreadedTransport<Self, L> {
         ThreadedTransport::new(self)
     }
 
-    /// Wraps this transport in a ThreadedTransport with a custom thread name
-    fn into_threaded_named(self, thread_name: String) -> ThreadedTransport<Self> {
+    /// Wraps with a custom thread name
+    fn into_threaded_named(self, thread_name: String) -> ThreadedTransport<Self, L> {
         ThreadedTransport::with_thread_name(self, thread_name)
     }
 }
 
-impl<T> IntoThreadedTransport for T where T: Transport<LogInfo> + Sized + 'static {}
+impl<T, L> IntoThreadedTransport<L> for T
+where
+    T: Transport<L> + Sized + 'static,
+    L: Send + 'static,
+{
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use logform::LogInfo;
     use std::{
         sync::{Arc, Mutex},
         thread,
