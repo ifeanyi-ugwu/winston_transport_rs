@@ -12,6 +12,7 @@
 use crate::Transport;
 use logform::{Format, LogInfo};
 use std::{
+    cell::RefCell,
     io::{self, Write},
     sync::{Arc, Mutex},
 };
@@ -23,6 +24,8 @@ where
     T: Transport<LogInfo>,
 {
     transport: T,
+    buffer: Vec<u8>,
+    level: String,
 }
 
 impl<T> TransportWriter<T>
@@ -30,7 +33,16 @@ where
     T: Transport<LogInfo>,
 {
     pub fn new(transport: T) -> Self {
-        Self { transport }
+        Self {
+            transport,
+            buffer: Vec::new(),
+            level: "INFO".to_string(),
+        }
+    }
+
+    pub fn with_level(mut self, level: impl Into<String>) -> Self {
+        self.level = level.into();
+        self
     }
 }
 
@@ -39,14 +51,28 @@ where
     T: Transport<LogInfo>,
 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let message = String::from_utf8_lossy(buf).to_string();
-        // We create a LogInfo with fixed level "INFO", you can customize if needed
-        let info = LogInfo::new("INFO", message);
-        self.transport.log(info);
+        self.buffer.extend_from_slice(buf);
+        // Process full lines
+        while let Some(pos) = self.buffer.iter().position(|&b| b == b'\n') {
+            let line_bytes = self.buffer.drain(..=pos).collect::<Vec<u8>>();
+            let line = String::from_utf8_lossy(&line_bytes)
+                .trim_end_matches(&['\r', '\n'][..])
+                .to_string();
+
+            let info = LogInfo::new(&self.level, line);
+            self.transport.log(info);
+        }
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        // Flush any buffered partial line before calling underlying flush
+        if !self.buffer.is_empty() {
+            let leftover = String::from_utf8_lossy(&self.buffer).to_string();
+            self.buffer.clear();
+            self.transport.log(LogInfo::new(&self.level, leftover));
+        }
+
         self.transport
             .flush()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
@@ -68,6 +94,8 @@ where
     T: Transport<LogInfo> + ?Sized,
 {
     transport: &'a T,
+    buffer: RefCell<Vec<u8>>,
+    level: String,
 }
 
 impl<'a, T> TransportWriterRef<'a, T>
@@ -75,7 +103,33 @@ where
     T: Transport<LogInfo> + ?Sized,
 {
     pub fn new(transport: &'a T) -> Self {
-        Self { transport }
+        Self {
+            transport,
+            buffer: RefCell::new(Vec::new()),
+            level: "INFO".to_string(),
+        }
+    }
+
+    pub fn with_level(mut self, level: impl Into<String>) -> Self {
+        self.level = level.into();
+        self
+    }
+
+    // Helper to flush internal buffer emitting logs for each full line
+    fn flush_buffered_lines(&self) {
+        let mut buf = self.buffer.borrow_mut();
+        let mut start = 0;
+
+        while let Some(pos) = buf[start..].iter().position(|&b| b == b'\n') {
+            let end = start + pos;
+            // Extract the line + '\n'
+            let line_bytes = buf.drain(..=end).collect::<Vec<_>>();
+            let line_str = String::from_utf8_lossy(&line_bytes)
+                .trim_end_matches(&['\r', '\n'][..])
+                .to_string();
+            self.transport.log(LogInfo::new(&self.level, line_str));
+            start = 0; // dropped above
+        }
     }
 }
 
@@ -84,13 +138,26 @@ where
     T: Transport<LogInfo> + ?Sized,
 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let message = String::from_utf8_lossy(buf).to_string();
-        let info = LogInfo::new("INFO", message);
-        self.transport.log(info);
+        // Append to internal buffer
+        {
+            let mut internal_buffer = self.buffer.borrow_mut();
+            internal_buffer.extend_from_slice(buf);
+        }
+
+        // Process any full lines in the buffer
+        self.flush_buffered_lines();
+
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        // Flush any remaining partial line
+        let leftover = self.buffer.borrow_mut().drain(..).collect::<Vec<u8>>();
+        if !leftover.is_empty() {
+            let leftover_str = String::from_utf8_lossy(&leftover).to_string();
+            self.transport.log(LogInfo::new(&self.level, leftover_str));
+        }
+
         self.transport
             .flush()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
