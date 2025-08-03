@@ -20,7 +20,10 @@ enum TransportMessage {
 
 /// A transport wrapper that executes all operations on a separate background thread
 /// for non-blocking, asynchronous logging operations.
-pub struct ThreadedTransport<T: Transport + 'static> {
+pub struct ThreadedTransport<T>
+where
+    T: Transport<LogInfo> + 'static,
+{
     sender: Sender<TransportMessage>,
     thread_handle: Option<JoinHandle<()>>,
     // Store references to the wrapped transport's level and format for immediate access
@@ -29,10 +32,12 @@ pub struct ThreadedTransport<T: Transport + 'static> {
     _phantom_data: PhantomData<T>,
 }
 
-impl<T: Transport + 'static> ThreadedTransport<T> {
+impl<T> ThreadedTransport<T>
+where
+    T: Transport<LogInfo> + 'static,
+{
     /// Creates a new ThreadedTransport that wraps the given transport
     pub fn new(transport: T) -> Self {
-        // Capture level and format before moving transport to thread
         let level = transport.get_level().cloned();
         let format = transport.get_format();
 
@@ -101,12 +106,9 @@ impl<T: Transport + 'static> ThreadedTransport<T> {
     /// Gracefully shuts down the background thread
     pub fn shutdown(mut self) -> Result<(), String> {
         if let Some(handle) = self.thread_handle.take() {
-            // Send shutdown signal
             self.sender
                 .send(TransportMessage::Shutdown)
                 .map_err(|_| "Failed to send shutdown signal")?;
-
-            // Wait for thread to finish
             handle
                 .join()
                 .map_err(|_| "Failed to join background thread")?;
@@ -115,10 +117,12 @@ impl<T: Transport + 'static> ThreadedTransport<T> {
     }
 }
 
-impl<T: Transport + 'static> Transport for ThreadedTransport<T> {
+impl<T> Transport<LogInfo> for ThreadedTransport<T>
+where
+    T: Transport<LogInfo> + 'static,
+{
     fn log(&self, info: LogInfo) {
-        // Non-blocking send - if the channel is full or closed, we drop the message
-        // We could also use a bounded channel with blocking send if we prefer backpressure
+        // Non-blocking send — drop message if channel closed or full
         let _ = self.sender.send(TransportMessage::Log(info));
     }
 
@@ -155,33 +159,32 @@ impl<T: Transport + 'static> Transport for ThreadedTransport<T> {
     }
 }
 
-impl<T: Transport + 'static> Drop for ThreadedTransport<T> {
+impl<T> Drop for ThreadedTransport<T>
+where
+    T: Transport<LogInfo> + 'static,
+{
     fn drop(&mut self) {
         if let Some(handle) = self.thread_handle.take() {
-            // Try to send shutdown signal
             let _ = self.sender.send(TransportMessage::Shutdown);
-
-            // Give the thread a moment to shut down gracefully
             let _ = handle.join();
         }
     }
 }
 
 /// Extension trait for easily wrapping any transport with threaded behavior
-pub trait IntoThreadedTransport: Transport + Sized + 'static {
-    /// Wraps this transport in an ThreadedTransport for non-blocking operations
+pub trait IntoThreadedTransport: Transport<LogInfo> + Sized + 'static {
+    /// Wraps this transport in a ThreadedTransport for non-blocking operations
     fn into_threaded(self) -> ThreadedTransport<Self> {
         ThreadedTransport::new(self)
     }
 
-    /// Wraps this transport in an ThreadedTransport with a custom thread name
+    /// Wraps this transport in a ThreadedTransport with a custom thread name
     fn into_threaded_named(self, thread_name: String) -> ThreadedTransport<Self> {
         ThreadedTransport::with_thread_name(self, thread_name)
     }
 }
 
-// Implement for all transports
-impl<T: Transport + 'static> IntoThreadedTransport for T {}
+impl<T> IntoThreadedTransport for T where T: Transport<LogInfo> + Sized + 'static {}
 
 #[cfg(test)]
 mod tests {
@@ -218,7 +221,7 @@ mod tests {
         }
     }
 
-    impl Transport for MockTransport {
+    impl Transport<LogInfo> for MockTransport {
         fn log(&self, info: LogInfo) {
             if self.delay > Duration::from_millis(0) {
                 thread::sleep(self.delay);
@@ -240,12 +243,10 @@ mod tests {
         let mock_clone = mock.clone();
         let threaded_transport = mock.into_threaded();
 
-        // Log some messages
         threaded_transport.log(LogInfo::new("INFO", "Message 1"));
         threaded_transport.log(LogInfo::new("INFO", "Message 2"));
         threaded_transport.log(LogInfo::new("INFO", "Message 3"));
 
-        // Flush to ensure all messages are processed
         threaded_transport.flush().unwrap();
 
         let messages = mock_clone.get_messages();
@@ -263,16 +264,13 @@ mod tests {
 
         let start = std::time::Instant::now();
 
-        // These should return immediately even though the underlying transport is slow
         threaded_transport.log(LogInfo::new("INFO", "Slow message 1"));
         threaded_transport.log(LogInfo::new("INFO", "Slow message 2"));
 
         let elapsed = start.elapsed();
 
-        // The log calls should complete quickly (much less than 200ms for 2 slow operations)
         assert!(elapsed < Duration::from_millis(50));
 
-        // But we can still flush and verify the messages were processed
         threaded_transport.flush().unwrap();
 
         let messages = slow_transport_clone.get_messages();
@@ -287,10 +285,8 @@ mod tests {
 
         threaded_transport.log(LogInfo::new("INFO", "Before shutdown"));
 
-        // Graceful shutdown
         threaded_transport.shutdown().unwrap();
 
-        // Verify message was processed
         let messages = mock_clone.get_messages();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0], "Before shutdown");

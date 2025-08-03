@@ -17,26 +17,32 @@ use std::{
 };
 
 /// owned adapter: takes ownership of a Transport and uses it as a Writer.
-pub struct TransportWriter<T: Transport> {
+/// Here, we assume `Transport<LogInfo>`.
+pub struct TransportWriter<T>
+where
+    T: Transport<LogInfo>,
+{
     transport: T,
 }
 
-impl<T: Transport> TransportWriter<T> {
+impl<T> TransportWriter<T>
+where
+    T: Transport<LogInfo>,
+{
     pub fn new(transport: T) -> Self {
         Self { transport }
     }
 }
 
-impl<T: Transport> Write for TransportWriter<T> {
-    /*fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let info = LogInfo::from_bytes(buf)?;
-        self.transport.log(info);
-        Ok(buf.len())
-    }*/
-
+impl<T> Write for TransportWriter<T>
+where
+    T: Transport<LogInfo>,
+{
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let message = String::from_utf8_lossy(buf).to_string();
-        self.transport.log(LogInfo::new("INFO", message));
+        // We create a LogInfo with fixed level "INFO", you can customize if needed
+        let info = LogInfo::new("INFO", message);
+        self.transport.log(info);
         Ok(buf.len())
     }
 
@@ -47,32 +53,40 @@ impl<T: Transport> Write for TransportWriter<T> {
     }
 }
 
-impl<T: Transport> Drop for TransportWriter<T> {
+impl<T> Drop for TransportWriter<T>
+where
+    T: Transport<LogInfo>,
+{
     fn drop(&mut self) {
         let _ = self.flush();
     }
 }
 
 /// borrowed adapter: borrows a Transport and uses it as a Writer.
-pub struct TransportWriterRef<'a, T: Transport> {
+pub struct TransportWriterRef<'a, T>
+where
+    T: Transport<LogInfo> + ?Sized,
+{
     transport: &'a T,
 }
 
-impl<'a, T: Transport> TransportWriterRef<'a, T> {
+impl<'a, T> TransportWriterRef<'a, T>
+where
+    T: Transport<LogInfo> + ?Sized,
+{
     pub fn new(transport: &'a T) -> Self {
         Self { transport }
     }
 }
 
-impl<'a, T: Transport> Write for TransportWriterRef<'a, T> {
-    /*fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let info = LogInfo::from_bytes(buf)?;
-        self.transport.log(info);
-        Ok(buf.len())
-    }*/
+impl<'a, T> Write for TransportWriterRef<'a, T>
+where
+    T: Transport<LogInfo> + ?Sized,
+{
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let message = String::from_utf8_lossy(buf).to_string();
-        self.transport.log(LogInfo::new("INFO", message));
+        let info = LogInfo::new("INFO", message);
+        self.transport.log(info);
         Ok(buf.len())
     }
 
@@ -83,7 +97,10 @@ impl<'a, T: Transport> Write for TransportWriterRef<'a, T> {
     }
 }
 
-impl<'a, T: Transport> Drop for TransportWriterRef<'a, T> {
+impl<'a, T> Drop for TransportWriterRef<'a, T>
+where
+    T: Transport<LogInfo> + ?Sized,
+{
     fn drop(&mut self) {
         let _ = self.flush();
     }
@@ -119,7 +136,7 @@ impl<W: Write + Send + Sync> WriterTransport<W> {
     }
 }
 
-impl<W: Write + Send + Sync> Transport for WriterTransport<W> {
+impl<W: Write + Send + Sync> Transport<LogInfo> for WriterTransport<W> {
     fn log(&self, info: LogInfo) {
         if let Ok(mut writer) = self.writer.lock() {
             let _ = writeln!(writer, "{}", info.message);
@@ -130,7 +147,6 @@ impl<W: Write + Send + Sync> Transport for WriterTransport<W> {
         if infos.is_empty() {
             return;
         }
-
         if let Ok(mut writer) = self.writer.lock() {
             for info in infos {
                 if let Err(e) = writeln!(writer, "{}", info.message) {
@@ -138,7 +154,6 @@ impl<W: Write + Send + Sync> Transport for WriterTransport<W> {
                         "Failed to write log entry in batch to WriterTransport: {}",
                         e
                     );
-                    // Continue on error for resilience
                 }
             }
         } else {
@@ -204,7 +219,7 @@ impl<'a, W: Write + Send + Sync> WriterTransportRef<'a, W> {
     }
 }
 
-impl<'a, W: Write + Send + Sync> Transport for WriterTransportRef<'a, W> {
+impl<'a, W: Write + Send + Sync> Transport<LogInfo> for WriterTransportRef<'a, W> {
     fn log(&self, info: LogInfo) {
         if let Ok(mut writer) = self.writer.lock() {
             let _ = writeln!(writer, "{}", info.message);
@@ -223,7 +238,6 @@ impl<'a, W: Write + Send + Sync> Transport for WriterTransportRef<'a, W> {
                         "Failed to write log entry in batch to WriterTransportRef: {}",
                         e
                     );
-                    // Continue on error for resilience
                 }
             }
         } else {
@@ -263,7 +277,7 @@ impl<'a, W: Write + Send + Sync> Drop for WriterTransportRef<'a, W> {
 pub trait IntoTransportWriter {
     fn into_writer(self) -> TransportWriter<Self>
     where
-        Self: Transport + Sized,
+        Self: Transport<LogInfo> + Sized,
     {
         TransportWriter::new(self)
     }
@@ -273,23 +287,23 @@ pub trait IntoTransportWriter {
 pub trait AsTransportWriter {
     fn as_writer(&self) -> TransportWriterRef<'_, Self>
     where
-        Self: Transport + Sized;
+        Self: Transport<LogInfo> + Sized;
 }
 
-impl<T: Transport> IntoTransportWriter for T {}
+impl<T> IntoTransportWriter for T where T: Transport<LogInfo> {}
 
-impl<T: Transport> AsTransportWriter for T {
+impl<T> AsTransportWriter for T
+where
+    T: Transport<LogInfo>,
+{
     fn as_writer(&self) -> TransportWriterRef<'_, Self> {
         TransportWriterRef::new(self)
     }
 }
 
 /// trait to convert an owned writer into a transport.
-pub trait IntoWriterTransport {
-    fn into_transport(self) -> WriterTransport<Self>
-    where
-        Self: Write + Send + Sync + Sized,
-    {
+pub trait IntoWriterTransport: Write + Send + Sync + Sized {
+    fn into_transport(self) -> WriterTransport<Self> {
         WriterTransport::new(self)
     }
 }
@@ -313,7 +327,8 @@ impl<W: Write + Send + Sync> AsWriterTransport for Mutex<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use logform::LogInfo;
+    use std::sync::{Arc, Mutex};
 
     #[derive(Clone)]
     struct MockTransport {
@@ -332,7 +347,7 @@ mod tests {
         }
     }
 
-    impl Transport for MockTransport {
+    impl Transport<LogInfo> for MockTransport {
         fn log(&self, info: LogInfo) {
             self.messages.lock().unwrap().push(info.message);
         }

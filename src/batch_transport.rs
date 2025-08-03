@@ -2,7 +2,10 @@ use crate::{log_query::LogQuery, Transport};
 use logform::{Format, LogInfo};
 use std::{
     marker::PhantomData,
-    sync::{mpsc::Sender, Arc},
+    sync::{
+        mpsc::{self, Sender},
+        Arc,
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -33,16 +36,16 @@ impl Default for BatchConfig {
 enum BatchMessage {
     Log(LogInfo),
     Flush(Sender<Result<(), String>>),
-    Query(
-        LogQuery,
-        std::sync::mpsc::Sender<Result<Vec<LogInfo>, String>>,
-    ),
+    Query(LogQuery, Sender<Result<Vec<LogInfo>, String>>),
     Shutdown,
 }
 
 /// A transport wrapper that batches log messages before sending them to the underlying transport
-pub struct BatchedTransport<T: Transport + Send + 'static> {
-    sender: std::sync::mpsc::Sender<BatchMessage>,
+pub struct BatchedTransport<T>
+where
+    T: Transport<LogInfo> + Send + 'static,
+{
+    sender: mpsc::Sender<BatchMessage>,
     thread_handle: Option<JoinHandle<()>>,
     level: Option<String>,
     format: Option<Arc<dyn Format<Input = LogInfo> + Send + Sync>>,
@@ -50,7 +53,10 @@ pub struct BatchedTransport<T: Transport + Send + 'static> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: Transport + Send + 'static> BatchedTransport<T> {
+impl<T> BatchedTransport<T>
+where
+    T: Transport<LogInfo> + Send + 'static,
+{
     /// Creates a new BatchedTransport with default configuration
     pub fn new(transport: T) -> Self {
         Self::with_config(transport, BatchConfig::default())
@@ -61,7 +67,7 @@ impl<T: Transport + Send + 'static> BatchedTransport<T> {
         let level = transport.get_level().cloned();
         let format = transport.get_format();
 
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = mpsc::channel();
         let batch_config = config.clone();
 
         let thread_handle = thread::spawn(move || {
@@ -83,7 +89,7 @@ impl<T: Transport + Send + 'static> BatchedTransport<T> {
         let level = transport.get_level().cloned();
         let format = transport.get_format();
 
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = mpsc::channel();
         let batch_config = config.clone();
 
         let thread_handle = thread::Builder::new()
@@ -104,24 +110,14 @@ impl<T: Transport + Send + 'static> BatchedTransport<T> {
     }
 
     /// The main batching loop running on the background thread
-    fn run_batch_thread(
-        transport: T,
-        receiver: std::sync::mpsc::Receiver<BatchMessage>,
-        config: BatchConfig,
-    ) {
+    fn run_batch_thread(transport: T, receiver: mpsc::Receiver<BatchMessage>, config: BatchConfig) {
         let mut batch = Vec::new();
         let mut last_flush = Instant::now();
 
-        // Helper function to flush the current batch
         let flush_batch = |batch: &mut Vec<LogInfo>| {
             if !batch.is_empty() {
-                // Log each item in the batch
-                /*for log_info in batch.drain(..) {
-                    transport.log(log_info);
-                }*/
-                // Drain the batch and pass the collected Vec to log_batch
+                // Use log_batch with the current batch
                 transport.log_batch(batch.drain(..).collect());
-                // Flush the underlying transport
                 let _ = transport.flush();
             }
         };
@@ -130,30 +126,25 @@ impl<T: Transport + Send + 'static> BatchedTransport<T> {
             // Calculate timeout for receiving messages
             let time_since_last_flush = last_flush.elapsed();
             let timeout = if batch.is_empty() {
-                // If no logs pending, wait indefinitely
                 None
             } else if time_since_last_flush >= config.max_batch_time {
-                // Time to flush, no wait
                 Some(Duration::from_millis(0))
             } else {
-                // Wait for remaining time
                 Some(config.max_batch_time - time_since_last_flush)
             };
 
-            // Try to receive a message with timeout
             let message_result = if let Some(timeout) = timeout {
                 receiver.recv_timeout(timeout)
             } else {
                 receiver
                     .recv()
-                    .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected)
+                    .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
             };
 
             match message_result {
                 Ok(BatchMessage::Log(info)) => {
                     batch.push(info);
 
-                    // Check if we should flush due to batch size
                     if batch.len() >= config.max_batch_size {
                         flush_batch(&mut batch);
                         last_flush = Instant::now();
@@ -165,7 +156,6 @@ impl<T: Transport + Send + 'static> BatchedTransport<T> {
                     let _ = response_sender.send(Ok(()));
                 }
                 Ok(BatchMessage::Query(query, response_sender)) => {
-                    // For queries, we need to flush pending logs first
                     flush_batch(&mut batch);
                     last_flush = Instant::now();
 
@@ -173,19 +163,16 @@ impl<T: Transport + Send + 'static> BatchedTransport<T> {
                     let _ = response_sender.send(result);
                 }
                 Ok(BatchMessage::Shutdown) => {
-                    // Flush any remaining logs before shutting down
                     flush_batch(&mut batch);
                     break;
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    // Timeout occurred, flush if we have logs and enough time has passed
+                Err(mpsc::RecvTimeoutError::Timeout) => {
                     if !batch.is_empty() && last_flush.elapsed() >= config.max_batch_time {
                         flush_batch(&mut batch);
                         last_flush = Instant::now();
                     }
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    // Channel disconnected, flush and exit
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
                     flush_batch(&mut batch);
                     break;
                 }
@@ -211,14 +198,17 @@ impl<T: Transport + Send + 'static> BatchedTransport<T> {
     }
 }
 
-impl<T: Transport + Send + 'static> Transport for BatchedTransport<T> {
+impl<T> Transport<LogInfo> for BatchedTransport<T>
+where
+    T: Transport<LogInfo> + Send + 'static,
+{
     fn log(&self, info: LogInfo) {
-        // Non-blocking send - logs are queued for batching
+        // Queue log for batching; drop if channel full or closed
         let _ = self.sender.send(BatchMessage::Log(info));
     }
 
     fn flush(&self) -> Result<(), String> {
-        let (response_sender, response_receiver) = std::sync::mpsc::channel();
+        let (response_sender, response_receiver) = mpsc::channel();
 
         self.sender
             .send(BatchMessage::Flush(response_sender))
@@ -226,7 +216,7 @@ impl<T: Transport + Send + 'static> Transport for BatchedTransport<T> {
 
         response_receiver
             .recv()
-            .map_err(|_| "Failed to receive flush response from background thread")?
+            .map_err(|_| "Failed to receive flush response from batch thread")?
     }
 
     fn get_level(&self) -> Option<&String> {
@@ -238,7 +228,7 @@ impl<T: Transport + Send + 'static> Transport for BatchedTransport<T> {
     }
 
     fn query(&self, options: &LogQuery) -> Result<Vec<LogInfo>, String> {
-        let (response_sender, response_receiver) = std::sync::mpsc::channel();
+        let (response_sender, response_receiver) = mpsc::channel();
 
         self.sender
             .send(BatchMessage::Query(options.clone(), response_sender))
@@ -250,7 +240,10 @@ impl<T: Transport + Send + 'static> Transport for BatchedTransport<T> {
     }
 }
 
-impl<T: Transport + Send + 'static> Drop for BatchedTransport<T> {
+impl<T> Drop for BatchedTransport<T>
+where
+    T: Transport<LogInfo> + Send + 'static,
+{
     fn drop(&mut self) {
         if self.config.flush_on_drop {
             if let Some(handle) = self.thread_handle.take() {
@@ -262,7 +255,7 @@ impl<T: Transport + Send + 'static> Drop for BatchedTransport<T> {
 }
 
 /// Extension trait for easily wrapping any transport with batching behavior
-pub trait IntoBatchedTransport: Transport + Send + Sized + 'static {
+pub trait IntoBatchedTransport: Transport<LogInfo> + Send + Sized + 'static {
     /// Wraps this transport in a BatchedTransport with default configuration
     fn into_batched(self) -> BatchedTransport<Self> {
         BatchedTransport::new(self)
@@ -283,8 +276,7 @@ pub trait IntoBatchedTransport: Transport + Send + Sized + 'static {
     }
 }
 
-// Implement for all transports
-impl<T: Transport + Send + 'static> IntoBatchedTransport for T {}
+impl<T> IntoBatchedTransport for T where T: Transport<LogInfo> + Send + Sized + 'static {}
 
 /// Builder for creating BatchConfig
 pub struct BatchConfigBuilder {
@@ -358,7 +350,7 @@ mod tests {
         }
     }
 
-    impl Transport for MockTransport {
+    impl Transport<LogInfo> for MockTransport {
         fn log(&self, info: LogInfo) {
             self.messages.lock().unwrap().push(info.message);
             self.log_calls.lock().unwrap().push(Instant::now());
@@ -381,7 +373,6 @@ mod tests {
 
         let batched = mock.into_batched_with_config(config);
 
-        // Send 3 messages - should trigger a batch flush
         batched.log(LogInfo::new("INFO", "Message 1"));
         batched.log(LogInfo::new("INFO", "Message 2"));
         batched.log(LogInfo::new("INFO", "Message 3"));
@@ -408,7 +399,6 @@ mod tests {
 
         let batched = mock.into_batched_with_config(config);
 
-        // Send 2 messages
         batched.log(LogInfo::new("INFO", "Message 1"));
         batched.log(LogInfo::new("INFO", "Message 2"));
 
