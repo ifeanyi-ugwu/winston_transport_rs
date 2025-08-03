@@ -13,7 +13,7 @@ use crate::Transport;
 use logform::{Format, LogInfo};
 use std::{
     io::{self, Write},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 /// owned adapter: takes ownership of a Transport and uses it as a Writer.
@@ -93,7 +93,7 @@ impl<'a, T: Transport> Drop for TransportWriterRef<'a, T> {
 pub struct WriterTransport<W: Write + Send + Sync> {
     pub writer: Mutex<W>,
     level: Option<String>,
-    format: Option<Format>,
+    format: Option<Arc<dyn Format<Input = LogInfo> + Send + Sync>>,
 }
 
 impl<W: Write + Send + Sync> WriterTransport<W> {
@@ -110,8 +110,11 @@ impl<W: Write + Send + Sync> WriterTransport<W> {
         self
     }
 
-    pub fn with_format(mut self, format: Format) -> Self {
-        self.format = Some(format);
+    pub fn with_format<F>(mut self, format: F) -> Self
+    where
+        F: Format<Input = LogInfo> + Send + Sync + 'static,
+    {
+        self.format = Some(Arc::new(format));
         self
     }
 }
@@ -147,8 +150,8 @@ impl<W: Write + Send + Sync> Transport for WriterTransport<W> {
         self.level.as_ref()
     }
 
-    fn get_format(&self) -> Option<&Format> {
-        self.format.as_ref()
+    fn get_format(&self) -> Option<Arc<dyn Format<Input = LogInfo> + Send + Sync>> {
+        self.format.clone()
     }
 
     fn flush(&self) -> Result<(), String> {
@@ -175,7 +178,7 @@ impl<W: Write + Send + Sync> Drop for WriterTransport<W> {
 pub struct WriterTransportRef<'a, W: Write + Send + Sync> {
     writer: &'a Mutex<W>,
     level: Option<String>,
-    format: Option<Format>,
+    format: Option<Arc<dyn Format<Input = LogInfo> + Send + Sync>>,
 }
 
 impl<'a, W: Write + Send + Sync> WriterTransportRef<'a, W> {
@@ -192,8 +195,11 @@ impl<'a, W: Write + Send + Sync> WriterTransportRef<'a, W> {
         self
     }
 
-    pub fn with_format(mut self, format: Format) -> Self {
-        self.format = Some(format);
+    pub fn with_format<F>(mut self, format: F) -> Self
+    where
+        F: Format<Input = LogInfo> + Send + Sync + 'static,
+    {
+        self.format = Some(Arc::new(format));
         self
     }
 }
@@ -229,8 +235,8 @@ impl<'a, W: Write + Send + Sync> Transport for WriterTransportRef<'a, W> {
         self.level.as_ref()
     }
 
-    fn get_format(&self) -> Option<&Format> {
-        self.format.as_ref()
+    fn get_format(&self) -> Option<Arc<dyn Format<Input = LogInfo> + Send + Sync>> {
+        self.format.clone()
     }
 
     fn flush(&self) -> Result<(), String> {
@@ -293,7 +299,6 @@ impl<W: Write + Send + Sync> IntoWriterTransport for W {}
 /// extension trait for converting a borrowed writer to a transport.
 pub trait AsWriterTransport {
     type Writer: Write + Send + Sync;
-
     fn as_transport(&self) -> WriterTransportRef<'_, Self::Writer>;
 }
 
@@ -406,12 +411,10 @@ mod tests {
     #[test]
     fn test_borrowed_writer_to_transport() {
         let test_buffer = Mutex::new(TestBuffer::new());
-
         let transport_ref = test_buffer.as_transport();
 
         transport_ref.log(LogInfo::new("INFO", "Borrowed log 1"));
         transport_ref.log(LogInfo::new("INFO", "Borrowed log 2"));
-
         transport_ref.flush().unwrap();
 
         let buffer_guard = test_buffer.lock().unwrap();

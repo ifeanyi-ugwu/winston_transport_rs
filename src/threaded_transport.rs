@@ -2,7 +2,10 @@ use crate::{log_query::LogQuery, Transport};
 use logform::{Format, LogInfo};
 use std::{
     marker::PhantomData,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        Arc,
+    },
     thread::{self, JoinHandle},
 };
 
@@ -22,7 +25,7 @@ pub struct ThreadedTransport<T: Transport + 'static> {
     thread_handle: Option<JoinHandle<()>>,
     // Store references to the wrapped transport's level and format for immediate access
     level: Option<String>,
-    format: Option<Format>,
+    format: Option<Arc<dyn Format<Input = LogInfo> + Send + Sync>>,
     _phantom_data: PhantomData<T>,
 }
 
@@ -31,7 +34,7 @@ impl<T: Transport + 'static> ThreadedTransport<T> {
     pub fn new(transport: T) -> Self {
         // Capture level and format before moving transport to thread
         let level = transport.get_level().cloned();
-        let format = transport.get_format().cloned();
+        let format = transport.get_format();
 
         let (sender, receiver) = mpsc::channel();
 
@@ -51,7 +54,7 @@ impl<T: Transport + 'static> ThreadedTransport<T> {
     /// Creates a new ThreadedTransport with a custom thread name
     pub fn with_thread_name(transport: T, thread_name: String) -> Self {
         let level = transport.get_level().cloned();
-        let format = transport.get_format().cloned();
+        let format = transport.get_format();
 
         let (sender, receiver) = mpsc::channel();
 
@@ -135,8 +138,8 @@ impl<T: Transport + 'static> Transport for ThreadedTransport<T> {
         self.level.as_ref()
     }
 
-    fn get_format(&self) -> Option<&Format> {
-        self.format.as_ref()
+    fn get_format(&self) -> Option<Arc<dyn Format<Input = LogInfo> + Send + Sync>> {
+        self.format.clone()
     }
 
     fn query(&self, options: &LogQuery) -> Result<Vec<LogInfo>, String> {

@@ -2,7 +2,7 @@ use crate::{log_query::LogQuery, Transport};
 use logform::{Format, LogInfo};
 use std::{
     marker::PhantomData,
-    sync::{mpsc::Sender, Arc, Mutex},
+    sync::{mpsc::Sender, Arc},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -45,7 +45,7 @@ pub struct BatchedTransport<T: Transport + Send + 'static> {
     sender: std::sync::mpsc::Sender<BatchMessage>,
     thread_handle: Option<JoinHandle<()>>,
     level: Option<String>,
-    format: Option<Format>,
+    format: Option<Arc<dyn Format<Input = LogInfo> + Send + Sync>>,
     config: BatchConfig,
     _phantom: PhantomData<T>,
 }
@@ -59,7 +59,7 @@ impl<T: Transport + Send + 'static> BatchedTransport<T> {
     /// Creates a new BatchedTransport with custom configuration
     pub fn with_config(transport: T, config: BatchConfig) -> Self {
         let level = transport.get_level().cloned();
-        let format = transport.get_format().cloned();
+        let format = transport.get_format();
 
         let (sender, receiver) = std::sync::mpsc::channel();
         let batch_config = config.clone();
@@ -81,7 +81,7 @@ impl<T: Transport + Send + 'static> BatchedTransport<T> {
     /// Creates a BatchedTransport with a custom thread name
     pub fn with_thread_name(transport: T, config: BatchConfig, thread_name: String) -> Self {
         let level = transport.get_level().cloned();
-        let format = transport.get_format().cloned();
+        let format = transport.get_format();
 
         let (sender, receiver) = std::sync::mpsc::channel();
         let batch_config = config.clone();
@@ -233,8 +233,8 @@ impl<T: Transport + Send + 'static> Transport for BatchedTransport<T> {
         self.level.as_ref()
     }
 
-    fn get_format(&self) -> Option<&Format> {
-        self.format.as_ref()
+    fn get_format(&self) -> Option<Arc<dyn Format<Input = LogInfo> + Send + Sync>> {
+        self.format.clone()
     }
 
     fn query(&self, options: &LogQuery) -> Result<Vec<LogInfo>, String> {
