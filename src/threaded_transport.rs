@@ -1,11 +1,7 @@
 use crate::{log_query::LogQuery, Transport};
-use logform::Format;
 use std::{
     marker::PhantomData,
-    sync::{
-        mpsc::{self, Receiver, Sender},
-        Arc,
-    },
+    sync::mpsc::{self, Receiver, Sender},
     thread::{self, JoinHandle},
 };
 
@@ -27,8 +23,6 @@ where
 {
     sender: Sender<TransportMessage<L>>,
     thread_handle: Option<JoinHandle<()>>,
-    level: Option<String>,
-    format: Option<Arc<dyn Format<Input = L> + Send + Sync>>,
     _phantom_data: PhantomData<(T, L)>,
 }
 
@@ -39,9 +33,6 @@ where
 {
     /// Creates a new ThreadedTransport that wraps the given transport
     pub fn new(transport: T) -> Self {
-        let level = transport.get_level().cloned();
-        let format = transport.get_format();
-
         let (sender, receiver) = mpsc::channel();
 
         let thread_handle = thread::spawn(move || {
@@ -51,17 +42,12 @@ where
         Self {
             sender,
             thread_handle: Some(thread_handle),
-            level,
-            format,
             _phantom_data: PhantomData,
         }
     }
 
     /// Creates a new ThreadedTransport with a custom thread name
     pub fn with_thread_name(transport: T, thread_name: String) -> Self {
-        let level = transport.get_level().cloned();
-        let format = transport.get_format();
-
         let (sender, receiver) = mpsc::channel();
 
         let thread_handle = thread::Builder::new()
@@ -74,8 +60,6 @@ where
         Self {
             sender,
             thread_handle: Some(thread_handle),
-            level,
-            format,
             _phantom_data: PhantomData,
         }
     }
@@ -136,14 +120,6 @@ where
         response_receiver
             .recv()
             .map_err(|_| "Failed to receive flush response from background thread")?
-    }
-
-    fn get_level(&self) -> Option<&String> {
-        self.level.as_ref()
-    }
-
-    fn get_format(&self) -> Option<Arc<dyn Format<Input = L> + Send + Sync>> {
-        self.format.clone()
     }
 
     fn query(&self, options: &LogQuery) -> Result<Vec<L>, String> {

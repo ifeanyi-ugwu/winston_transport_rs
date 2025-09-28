@@ -1,11 +1,7 @@
 use crate::{log_query::LogQuery, Transport};
-use logform::Format;
 use std::{
     marker::PhantomData,
-    sync::{
-        mpsc::{self, Sender},
-        Arc,
-    },
+    sync::mpsc::{self, Sender},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -48,8 +44,6 @@ where
 {
     sender: Sender<BatchMessage<L>>,
     thread_handle: Option<JoinHandle<()>>,
-    level: Option<String>,
-    format: Option<Arc<dyn Format<Input = L> + Send + Sync>>,
     config: BatchConfig,
     _phantom: PhantomData<(T, L)>,
 }
@@ -66,9 +60,6 @@ where
 
     /// Creates a new BatchedTransport with custom configuration
     pub fn with_config(transport: T, config: BatchConfig) -> Self {
-        let level = transport.get_level().cloned();
-        let format = transport.get_format();
-
         let (sender, receiver) = mpsc::channel();
         let batch_config = config.clone();
 
@@ -79,8 +70,6 @@ where
         Self {
             sender,
             thread_handle: Some(thread_handle),
-            level,
-            format,
             config,
             _phantom: PhantomData,
         }
@@ -88,9 +77,6 @@ where
 
     /// Creates a BatchedTransport with a custom thread name
     pub fn with_thread_name(transport: T, config: BatchConfig, thread_name: String) -> Self {
-        let level = transport.get_level().cloned();
-        let format = transport.get_format();
-
         let (sender, receiver) = mpsc::channel();
         let batch_config = config.clone();
 
@@ -104,8 +90,6 @@ where
         Self {
             sender,
             thread_handle: Some(thread_handle),
-            level,
-            format,
             config,
             _phantom: PhantomData,
         }
@@ -222,14 +206,6 @@ where
             .map_err(|_| "Failed to receive flush response from batch thread")?
     }
 
-    fn get_level(&self) -> Option<&String> {
-        self.level.as_ref()
-    }
-
-    fn get_format(&self) -> Option<Arc<dyn Format<Input = L> + Send + Sync>> {
-        self.format.clone()
-    }
-
     fn query(&self, options: &LogQuery) -> Result<Vec<L>, String> {
         let (response_sender, response_receiver) = mpsc::channel();
 
@@ -267,8 +243,6 @@ where
         Self {
             sender: self.sender.clone(),
             thread_handle: None, // Don't clone thread handle because thread is owned by original
-            level: self.level.clone(),
-            format: self.format.clone(),
             config: self.config.clone(),
             _phantom: PhantomData,
         }
@@ -429,7 +403,6 @@ mod tests {
         messages: Arc<Mutex<Vec<String>>>,
         log_calls: Arc<Mutex<Vec<Instant>>>,
         should_fail: Arc<Mutex<bool>>,
-        level: Arc<String>,
     }
 
     impl MockQueryTransport {
@@ -438,7 +411,6 @@ mod tests {
                 messages: Arc::new(Mutex::new(Vec::new())),
                 log_calls: Arc::new(Mutex::new(Vec::new())),
                 should_fail: Arc::new(Mutex::new(false)),
-                level: Arc::new("INFO".to_string()),
             }
         }
 
@@ -476,14 +448,6 @@ mod tests {
             } else {
                 Ok(())
             }
-        }
-
-        fn get_level(&self) -> Option<&String> {
-            Some(&self.level)
-        }
-
-        fn get_format(&self) -> Option<Arc<dyn Format<Input = LogInfo> + Send + Sync>> {
-            None
         }
 
         fn query(&self, _options: &LogQuery) -> Result<Vec<LogInfo>, String> {
