@@ -6,6 +6,7 @@ use std::{
 };
 
 /// Message types for communicating with the background thread for ThreadedTransport
+/// Generic over any log type `L`.
 #[derive(Debug)]
 enum TransportMessage<L> {
     Log(L),
@@ -16,6 +17,7 @@ enum TransportMessage<L> {
 
 /// A transport wrapper that executes all operations on a separate background thread
 /// for non-blocking, asynchronous logging operations.
+/// Generic over any transport type `T` and log type `L`.
 pub struct ThreadedTransport<T, L>
 where
     T: Transport<L> + Send + 'static,
@@ -149,6 +151,7 @@ where
 }
 
 /// Extension trait for easily wrapping any transport with threaded behavior
+/// Generic over any log type `L`.
 pub trait IntoThreadedTransport<L>: Transport<L> + Send + Sized + 'static
 where
     L: Send + 'static,
@@ -174,20 +177,42 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use logform::LogInfo;
     use std::{
         sync::{Arc, Mutex},
         thread,
         time::Duration,
     };
 
+    // Generic test log type for testing - completely generic!
+    #[derive(Clone, Debug, PartialEq)]
+    struct TestLog {
+        level: String,
+        message: String,
+    }
+
+    impl TestLog {
+        fn new(level: &str, message: &str) -> Self {
+            Self {
+                level: level.to_string(),
+                message: message.to_string(),
+            }
+        }
+    }
+
+    // Generic mock transport that works with any log type
     #[derive(Clone)]
-    struct MockTransport {
-        messages: Arc<Mutex<Vec<String>>>,
+    struct MockTransport<L>
+    where
+        L: Clone + Send + 'static,
+    {
+        messages: Arc<Mutex<Vec<L>>>,
         delay: Duration,
     }
 
-    impl MockTransport {
+    impl<L> MockTransport<L>
+    where
+        L: Clone + Send + 'static,
+    {
         fn new() -> Self {
             Self {
                 messages: Arc::new(Mutex::new(Vec::new())),
@@ -202,17 +227,20 @@ mod tests {
             }
         }
 
-        fn get_messages(&self) -> Vec<String> {
+        fn get_messages(&self) -> Vec<L> {
             self.messages.lock().unwrap().clone()
         }
     }
 
-    impl Transport<LogInfo> for MockTransport {
-        fn log(&self, info: LogInfo) {
+    impl<L> Transport<L> for MockTransport<L>
+    where
+        L: Clone + Send + 'static,
+    {
+        fn log(&self, info: L) {
             if self.delay > Duration::from_millis(0) {
                 thread::sleep(self.delay);
             }
-            self.messages.lock().unwrap().push(info.message);
+            self.messages.lock().unwrap().push(info);
         }
 
         fn flush(&self) -> Result<(), String> {
@@ -225,36 +253,38 @@ mod tests {
 
     #[test]
     fn test_threaded_transport_basic_logging() {
-        let mock = MockTransport::new();
+        let mock: MockTransport<TestLog> = MockTransport::new();
         let mock_clone = mock.clone();
         let threaded_transport = mock.into_threaded();
 
-        threaded_transport.log(LogInfo::new("INFO", "Message 1"));
-        threaded_transport.log(LogInfo::new("INFO", "Message 2"));
-        threaded_transport.log(LogInfo::new("INFO", "Message 3"));
+        threaded_transport.log(TestLog::new("INFO", "Message 1"));
+        threaded_transport.log(TestLog::new("INFO", "Message 2"));
+        threaded_transport.log(TestLog::new("INFO", "Message 3"));
 
         threaded_transport.flush().unwrap();
 
         let messages = mock_clone.get_messages();
         assert_eq!(messages.len(), 3);
-        assert_eq!(messages[0], "Message 1");
-        assert_eq!(messages[1], "Message 2");
-        assert_eq!(messages[2], "Message 3");
+        assert_eq!(messages[0].message, "Message 1");
+        assert_eq!(messages[1].message, "Message 2");
+        assert_eq!(messages[2].message, "Message 3");
     }
 
     #[test]
     fn test_threaded_transport_non_blocking() {
-        let slow_transport = MockTransport::with_delay(Duration::from_millis(100));
+        let slow_transport: MockTransport<TestLog> =
+            MockTransport::with_delay(Duration::from_millis(100));
         let slow_transport_clone = slow_transport.clone();
         let threaded_transport = slow_transport.into_threaded();
 
         let start = std::time::Instant::now();
 
-        threaded_transport.log(LogInfo::new("INFO", "Slow message 1"));
-        threaded_transport.log(LogInfo::new("INFO", "Slow message 2"));
+        threaded_transport.log(TestLog::new("INFO", "Slow message 1"));
+        threaded_transport.log(TestLog::new("INFO", "Slow message 2"));
 
         let elapsed = start.elapsed();
 
+        // Should be non-blocking - these calls return immediately
         assert!(elapsed < Duration::from_millis(50));
 
         threaded_transport.flush().unwrap();
@@ -265,16 +295,132 @@ mod tests {
 
     #[test]
     fn test_threaded_transport_graceful_shutdown() {
-        let mock = MockTransport::new();
+        let mock: MockTransport<TestLog> = MockTransport::new();
         let mock_clone = mock.clone();
         let threaded_transport = mock.into_threaded_named("test-logger".to_string());
 
-        threaded_transport.log(LogInfo::new("INFO", "Before shutdown"));
+        threaded_transport.log(TestLog::new("INFO", "Before shutdown"));
 
         threaded_transport.shutdown().unwrap();
 
         let messages = mock_clone.get_messages();
         assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0], "Before shutdown");
+        assert_eq!(messages[0].message, "Before shutdown");
+    }
+
+    // Test with different log types to prove complete genericity
+    #[derive(Clone, Debug, PartialEq)]
+    struct EventLog {
+        event_type: String,
+        timestamp: u64,
+        user_id: Option<u32>,
+        data: serde_json::Value,
+    }
+
+    impl EventLog {
+        fn new(event_type: &str, timestamp: u64, user_id: Option<u32>) -> Self {
+            Self {
+                event_type: event_type.to_string(),
+                timestamp,
+                user_id,
+                data: serde_json::json!({}),
+            }
+        }
+    }
+
+    #[test]
+    fn test_with_custom_event_log() {
+        let mock: MockTransport<EventLog> = MockTransport::new();
+        let mock_clone = mock.clone();
+        let threaded_transport = mock.into_threaded();
+
+        threaded_transport.log(EventLog::new("user_login", 1234567890, Some(42)));
+        threaded_transport.log(EventLog::new("page_view", 1234567891, Some(42)));
+
+        threaded_transport.flush().unwrap();
+
+        let messages = mock_clone.get_messages();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].event_type, "user_login");
+        assert_eq!(messages[0].user_id, Some(42));
+        assert_eq!(messages[1].event_type, "page_view");
+    }
+
+    // Test with simple string logs
+    #[test]
+    fn test_with_string_logs() {
+        let mock: MockTransport<String> = MockTransport::new();
+        let mock_clone = mock.clone();
+        let threaded_transport = mock.into_threaded();
+
+        threaded_transport.log("Simple string log 1".to_string());
+        threaded_transport.log("Simple string log 2".to_string());
+
+        threaded_transport.flush().unwrap();
+
+        let messages = mock_clone.get_messages();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0], "Simple string log 1");
+        assert_eq!(messages[1], "Simple string log 2");
+    }
+
+    #[test]
+    fn test_with_log_info() {
+        use logform::LogInfo;
+
+        let mock = MockTransport::new();
+        let mock_clone = mock.clone();
+        let threaded_transport = mock.into_threaded();
+
+        threaded_transport.log(LogInfo::new("INFO", "Simple string log 1"));
+
+        threaded_transport.log(LogInfo::new("INFO", "Simple string log 2"));
+
+        threaded_transport.flush().unwrap();
+
+        let messages = mock_clone.get_messages();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].message, "Simple string log 1");
+        assert_eq!(messages[1].message, "Simple string log 2");
+    }
+
+    // Test graceful shutdown with custom types
+    #[test]
+    fn test_graceful_shutdown_with_custom_types() {
+        let mock: MockTransport<EventLog> = MockTransport::new();
+        let mock_clone = mock.clone();
+        let threaded_transport = mock.into_threaded_named("event-logger".to_string());
+
+        threaded_transport.log(EventLog::new("app_start", 1234567890, None));
+        threaded_transport.log(EventLog::new("user_action", 1234567891, Some(123)));
+
+        // Shutdown should flush all pending messages
+        threaded_transport.shutdown().unwrap();
+
+        let messages = mock_clone.get_messages();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].event_type, "app_start");
+        assert_eq!(messages[1].event_type, "user_action");
+        assert_eq!(messages[1].user_id, Some(123));
+    }
+
+    // Test that Drop trait works correctly
+    #[test]
+    fn test_drop_behavior() {
+        let mock: MockTransport<TestLog> = MockTransport::new();
+        let mock_clone = mock.clone();
+
+        {
+            let threaded_transport = mock.into_threaded();
+            threaded_transport.log(TestLog::new("INFO", "Will be flushed on drop"));
+            // threaded_transport goes out of scope here and Drop is called
+        }
+
+        // Give some time for the drop to complete
+        thread::sleep(Duration::from_millis(100));
+
+        let messages = mock_clone.get_messages();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].message, "Will be flushed on drop");
     }
 }
