@@ -37,6 +37,7 @@ enum BatchMessage<L> {
 }
 
 /// A transport wrapper that batches log messages before sending them to the underlying transport
+/// Generic over any log type `L` and transport type `T`.
 pub struct BatchedTransport<T, L>
 where
     T: Transport<L> + Send + 'static,
@@ -250,6 +251,7 @@ where
 }
 
 /// Extension trait for easily wrapping any transport with batching behavior
+/// Generic over any log type `L`.
 pub trait IntoBatchedTransport<L>: Transport<L> + Send + Sized + 'static
 where
     L: Send + 'static,
@@ -283,20 +285,50 @@ where
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
-    use logform::LogInfo;
     use std::{
+        fmt::Display,
         sync::{Arc, Mutex},
         time::Duration,
     };
 
+    // Generic test log type for testing - completely generic!
+    #[derive(Clone, Debug, PartialEq)]
+    struct TestLog {
+        level: String,
+        message: String,
+    }
+
+    impl TestLog {
+        fn new(level: &str, message: &str) -> Self {
+            Self {
+                level: level.to_string(),
+                message: message.to_string(),
+            }
+        }
+    }
+
+    impl Display for TestLog {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "[{}] {}", self.level, self.message)
+        }
+    }
+
+    // Generic mock transport that works with any log type
     #[derive(Clone)]
-    struct MockTransport {
-        messages: Arc<Mutex<Vec<String>>>,
+    struct MockTransport<L>
+    where
+        L: Clone + Send + 'static,
+    {
+        messages: Arc<Mutex<Vec<L>>>,
         log_calls: Arc<Mutex<Vec<Instant>>>,
     }
 
-    impl MockTransport {
+    impl<L> MockTransport<L>
+    where
+        L: Clone + Send + 'static,
+    {
         fn new() -> Self {
             Self {
                 messages: Arc::new(Mutex::new(Vec::new())),
@@ -304,7 +336,7 @@ mod tests {
             }
         }
 
-        fn get_messages(&self) -> Vec<String> {
+        fn get_messages(&self) -> Vec<L> {
             self.messages.lock().unwrap().clone()
         }
 
@@ -313,9 +345,12 @@ mod tests {
         }
     }
 
-    impl Transport<LogInfo> for MockTransport {
-        fn log(&self, info: LogInfo) {
-            self.messages.lock().unwrap().push(info.message);
+    impl<L> Transport<L> for MockTransport<L>
+    where
+        L: Clone + Send + 'static,
+    {
+        fn log(&self, info: L) {
+            self.messages.lock().unwrap().push(info);
             self.log_calls.lock().unwrap().push(Instant::now());
         }
 
@@ -326,7 +361,7 @@ mod tests {
 
     #[test]
     fn test_batch_size_trigger() {
-        let mock = MockTransport::new();
+        let mock: MockTransport<TestLog> = MockTransport::new();
         let mock_clone = mock.clone();
 
         let config = BatchConfig {
@@ -337,22 +372,21 @@ mod tests {
 
         let batched = mock.into_batched_with_config(config);
 
-        batched.log(LogInfo::new("INFO", "Message 1"));
-        batched.log(LogInfo::new("INFO", "Message 2"));
-        batched.log(LogInfo::new("INFO", "Message 3"));
+        batched.log(TestLog::new("INFO", "Message 1"));
+        batched.log(TestLog::new("INFO", "Message 2"));
+        batched.log(TestLog::new("INFO", "Message 3"));
 
         // Allow thread to process batch
         std::thread::sleep(Duration::from_millis(100));
 
         let messages = mock_clone.get_messages();
         assert_eq!(messages.len(), 3);
-
         assert_eq!(mock_clone.get_log_call_count(), 3);
     }
 
     #[test]
     fn test_time_trigger() {
-        let mock = MockTransport::new();
+        let mock: MockTransport<TestLog> = MockTransport::new();
         let mock_clone = mock.clone();
 
         let config = BatchConfig {
@@ -363,20 +397,20 @@ mod tests {
 
         let batched = mock.into_batched_with_config(config);
 
-        batched.log(LogInfo::new("INFO", "Message 1"));
-        batched.log(LogInfo::new("INFO", "Message 2"));
+        batched.log(TestLog::new("INFO", "Message 1"));
+        batched.log(TestLog::new("INFO", "Message 2"));
 
         std::thread::sleep(Duration::from_millis(100));
 
         let messages = mock_clone.get_messages();
         assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0], "Message 1");
-        assert_eq!(messages[1], "Message 2");
+        assert_eq!(messages[0].message, "Message 1");
+        assert_eq!(messages[1].message, "Message 2");
     }
 
     #[test]
     fn test_manual_flush() {
-        let mock = MockTransport::new();
+        let mock: MockTransport<TestLog> = MockTransport::new();
         let mock_clone = mock.clone();
 
         let config = BatchConfig {
@@ -387,25 +421,31 @@ mod tests {
 
         let batched = mock.into_batched_with_config(config);
 
-        batched.log(LogInfo::new("INFO", "Message 1"));
+        batched.log(TestLog::new("INFO", "Message 1"));
         batched.flush().unwrap();
 
         std::thread::sleep(Duration::from_millis(50));
 
         let messages = mock_clone.get_messages();
         assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0], "Message 1");
+        assert_eq!(messages[0].message, "Message 1");
     }
 
-    /// MockTransport with query support and error injection
+    /// Generic mock transport with query support and error injection
     #[derive(Clone)]
-    struct MockQueryTransport {
-        messages: Arc<Mutex<Vec<String>>>,
+    struct MockQueryTransport<L>
+    where
+        L: Clone + Send + 'static,
+    {
+        messages: Arc<Mutex<Vec<L>>>,
         log_calls: Arc<Mutex<Vec<Instant>>>,
         should_fail: Arc<Mutex<bool>>,
     }
 
-    impl MockQueryTransport {
+    impl<L> MockQueryTransport<L>
+    where
+        L: Clone + Send + 'static,
+    {
         fn new() -> Self {
             Self {
                 messages: Arc::new(Mutex::new(Vec::new())),
@@ -419,25 +459,21 @@ mod tests {
         }
     }
 
-    impl Transport<LogInfo> for MockQueryTransport {
-        fn log(&self, info: LogInfo) {
-            /*if *self.should_fail.lock().unwrap() {
-                // Simulate failure by panicking, or ignore to simulate silent failure if desired
-                panic!("Transport log failure");
-            }*/
-            self.messages.lock().unwrap().push(info.message);
+    impl<L> Transport<L> for MockQueryTransport<L>
+    where
+        L: Clone + Send + 'static,
+    {
+        fn log(&self, info: L) {
+            self.messages.lock().unwrap().push(info);
             self.log_calls.lock().unwrap().push(Instant::now());
         }
 
-        fn log_batch(&self, batch: Vec<LogInfo>) {
-            /*if *self.should_fail.lock().unwrap() {
-                panic!("Transport batch log failure");
-            }*/
+        fn log_batch(&self, batch: Vec<L>) {
             let mut messages = self.messages.lock().unwrap();
             let mut log_calls = self.log_calls.lock().unwrap();
 
             for info in batch {
-                messages.push(info.message);
+                messages.push(info);
                 log_calls.push(Instant::now());
             }
         }
@@ -450,18 +486,12 @@ mod tests {
             }
         }
 
-        fn query(&self, _options: &LogQuery) -> Result<Vec<LogInfo>, String> {
+        fn query(&self, _options: &LogQuery) -> Result<Vec<L>, String> {
             if *self.should_fail.lock().unwrap() {
                 Err("Query failed".to_string())
             } else {
                 // Return a dummy vector of logs for testing
-                let logs = self
-                    .messages
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .map(|msg| LogInfo::new("INFO", msg))
-                    .collect();
+                let logs = self.messages.lock().unwrap().clone();
                 Ok(logs)
             }
         }
@@ -469,10 +499,10 @@ mod tests {
 
     #[test]
     fn test_query_functionality() {
-        let mock = MockQueryTransport::new();
+        let mock: MockQueryTransport<TestLog> = MockQueryTransport::new();
         let batched = mock.clone().into_batched();
 
-        batched.log(LogInfo::new("INFO", "Test query 1"));
+        batched.log(TestLog::new("INFO", "Test query 1"));
         batched.flush().unwrap();
 
         let query = LogQuery::default();
@@ -484,12 +514,12 @@ mod tests {
 
     #[test]
     fn test_error_handling_flush() {
-        let mock = MockQueryTransport::new();
+        let mock: MockQueryTransport<TestLog> = MockQueryTransport::new();
         mock.fail(true); // Inject failure
 
         let batched = mock.into_batched();
 
-        batched.log(LogInfo::new("INFO", "Should fail"));
+        batched.log(TestLog::new("INFO", "Should fail"));
 
         // Flush returns error because transport is failing
         let flush_result = batched.flush();
@@ -500,7 +530,7 @@ mod tests {
 
     #[test]
     fn test_error_handling_query() {
-        let mock = MockQueryTransport::new();
+        let mock: MockQueryTransport<TestLog> = MockQueryTransport::new();
         let batched = mock.clone().into_batched();
 
         mock.fail(true); // Inject failure
@@ -517,7 +547,7 @@ mod tests {
     fn test_concurrent_access() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        let mock = MockTransport::new();
+        let mock: MockTransport<TestLog> = MockTransport::new();
         let batched = mock.clone().into_batched_with_config(BatchConfig {
             max_batch_size: 10,
             max_batch_time: Duration::from_secs(1),
@@ -533,7 +563,7 @@ mod tests {
             handles.push(thread::spawn(move || {
                 for j in 0..20 {
                     let msg = format!("Thread {} - Message {}", i, j);
-                    batched.log(LogInfo::new("INFO", &msg));
+                    batched.log(TestLog::new("INFO", &msg));
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
             }));
@@ -552,7 +582,7 @@ mod tests {
 
     #[test]
     fn test_shutdown_behavior_with_pending_messages() {
-        let mock = MockTransport::new();
+        let mock: MockTransport<TestLog> = MockTransport::new();
         let config = BatchConfig {
             max_batch_size: 100, // large batch size to avoid automatic flush on batch count
             max_batch_time: Duration::from_secs(10), // long timeout
@@ -561,8 +591,8 @@ mod tests {
 
         let batched = mock.clone().into_batched_with_config(config);
 
-        batched.log(LogInfo::new("INFO", "Pending message 1"));
-        batched.log(LogInfo::new("INFO", "Pending message 2"));
+        batched.log(TestLog::new("INFO", "Pending message 1"));
+        batched.log(TestLog::new("INFO", "Pending message 2"));
 
         // Drop batched, which should flush pending messages because flush_on_drop = true
         drop(batched);
@@ -572,7 +602,81 @@ mod tests {
 
         let messages = mock.get_messages();
         assert_eq!(messages.len(), 2);
-        assert!(messages.contains(&"Pending message 1".to_string()));
-        assert!(messages.contains(&"Pending message 2".to_string()));
+
+        // Check messages exist
+        let message_strings: Vec<String> = messages.iter().map(|m| m.message.clone()).collect();
+        assert!(message_strings.contains(&"Pending message 1".to_string()));
+        assert!(message_strings.contains(&"Pending message 2".to_string()));
+    }
+
+    // Test with different log types to prove complete genericity
+    #[derive(Clone, Debug, PartialEq)]
+    struct CustomLogType {
+        timestamp: u64,
+        data: String,
+    }
+
+    impl CustomLogType {
+        fn new(timestamp: u64, data: &str) -> Self {
+            Self {
+                timestamp,
+                data: data.to_string(),
+            }
+        }
+    }
+
+    #[test]
+    fn test_with_custom_log_type() {
+        let mock: MockTransport<CustomLogType> = MockTransport::new();
+        let mock_clone = mock.clone();
+
+        let batched = mock.into_batched();
+
+        batched.log(CustomLogType::new(123456789, "Custom log entry"));
+        batched.flush().unwrap();
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let messages = mock_clone.get_messages();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].data, "Custom log entry");
+        assert_eq!(messages[0].timestamp, 123456789);
+    }
+
+    // Even test with simple strings
+    #[test]
+    fn test_with_string_log_type() {
+        let mock: MockTransport<String> = MockTransport::new();
+        let mock_clone = mock.clone();
+
+        let batched = mock.into_batched();
+
+        batched.log("Simple string log".to_string());
+        batched.flush().unwrap();
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let messages = mock_clone.get_messages();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0], "Simple string log");
+    }
+
+    #[test]
+    fn test_with_log_info() {
+        use logform::LogInfo;
+
+        let mock = MockTransport::new();
+        let mock_clone = mock.clone();
+
+        let batched = mock.into_batched();
+
+        batched.log(LogInfo::new("INFO", "Simple string log"));
+        batched.flush().unwrap();
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let messages = mock_clone.get_messages();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].message, "Simple string log");
     }
 }
