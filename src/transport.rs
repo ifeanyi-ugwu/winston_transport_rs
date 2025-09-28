@@ -1,6 +1,6 @@
 use crate::log_query::LogQuery;
 
-pub trait Transport<L>: Send + Sync {
+pub trait Transport<L> {
     fn log(&self, info: L);
 
     fn log_batch(&self, logs: Vec<L>) {

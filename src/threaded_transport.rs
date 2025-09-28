@@ -18,7 +18,7 @@ enum TransportMessage<L> {
 /// for non-blocking, asynchronous logging operations.
 pub struct ThreadedTransport<T, L>
 where
-    T: Transport<L> + 'static,
+    T: Transport<L> + Send + 'static,
     L: Send + 'static,
 {
     sender: Sender<TransportMessage<L>>,
@@ -28,7 +28,7 @@ where
 
 impl<T, L> ThreadedTransport<T, L>
 where
-    T: Transport<L> + 'static,
+    T: Transport<L> + Send + 'static,
     L: Send + 'static,
 {
     /// Creates a new ThreadedTransport that wraps the given transport
@@ -103,8 +103,8 @@ where
 
 impl<T, L> Transport<L> for ThreadedTransport<T, L>
 where
-    T: Transport<L> + 'static,
-    L: Send + Sync + 'static,
+    T: Transport<L> + Send + 'static,
+    L: Send + 'static,
 {
     fn log(&self, info: L) {
         let _ = self.sender.send(TransportMessage::Log(info));
@@ -137,7 +137,7 @@ where
 
 impl<T, L> Drop for ThreadedTransport<T, L>
 where
-    T: Transport<L> + 'static,
+    T: Transport<L> + Send + 'static,
     L: Send + 'static,
 {
     fn drop(&mut self) {
@@ -149,7 +149,7 @@ where
 }
 
 /// Extension trait for easily wrapping any transport with threaded behavior
-pub trait IntoThreadedTransport<L>: Transport<L> + Sized + 'static
+pub trait IntoThreadedTransport<L>: Transport<L> + Send + Sized + 'static
 where
     L: Send + 'static,
 {
@@ -166,7 +166,7 @@ where
 
 impl<T, L> IntoThreadedTransport<L> for T
 where
-    T: Transport<L> + Sized + 'static,
+    T: Transport<L> + Send + Sized + 'static,
     L: Send + 'static,
 {
 }

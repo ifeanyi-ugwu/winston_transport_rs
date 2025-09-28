@@ -188,7 +188,7 @@ where
 impl<T, L> Transport<L> for BatchedTransport<T, L>
 where
     T: Transport<L> + Send + 'static,
-    L: Send + Sync + 'static,
+    L: Send + 'static,
 {
     fn log(&self, info: L) {
         let _ = self.sender.send(BatchMessage::Log(info));

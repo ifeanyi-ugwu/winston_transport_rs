@@ -187,7 +187,7 @@ where
 /// Generic over any log type `L` that implements `Display`.
 pub struct WriterTransport<W, L>
 where
-    W: Write + Send + Sync,
+    W: Write,
     L: Display,
 {
     pub writer: Mutex<W>,
@@ -196,7 +196,7 @@ where
 
 impl<W, L> WriterTransport<W, L>
 where
-    W: Write + Send + Sync,
+    W: Write,
     L: Display,
 {
     pub fn new(writer: W) -> Self {
@@ -209,8 +209,8 @@ where
 
 impl<W, L> Transport<L> for WriterTransport<W, L>
 where
-    W: Write + Send + Sync,
-    L: Display + Send + Sync,
+    W: Write,
+    L: Display,
 {
     fn log(&self, info: L) {
         if let Ok(mut writer) = self.writer.lock() {
@@ -250,7 +250,7 @@ where
 
 impl<W, L> Drop for WriterTransport<W, L>
 where
-    W: Write + Send + Sync,
+    W: Write,
     L: Display,
 {
     fn drop(&mut self) {
@@ -264,7 +264,7 @@ where
 /// Generic over any log type `L` that implements `Display`.
 pub struct WriterTransportRef<'a, W, L>
 where
-    W: Write + Send + Sync,
+    W: Write,
     L: Display,
 {
     writer: &'a Mutex<W>,
@@ -273,7 +273,7 @@ where
 
 impl<'a, W, L> WriterTransportRef<'a, W, L>
 where
-    W: Write + Send + Sync,
+    W: Write,
     L: Display,
 {
     pub fn new(writer: &'a Mutex<W>) -> Self {
@@ -286,8 +286,8 @@ where
 
 impl<'a, W, L> Transport<L> for WriterTransportRef<'a, W, L>
 where
-    W: Write + Send + Sync,
-    L: Display + Send + Sync,
+    W: Write,
+    L: Display,
 {
     fn log(&self, info: L) {
         if let Ok(mut writer) = self.writer.lock() {
@@ -328,7 +328,7 @@ where
 
 impl<'a, W, L> Drop for WriterTransportRef<'a, W, L>
 where
-    W: Write + Send + Sync,
+    W: Write,
     L: Display,
 {
     fn drop(&mut self) {
@@ -373,7 +373,7 @@ where
 }
 
 /// trait to convert an owned writer into a transport.
-pub trait IntoWriterTransport<L>: Write + Send + Sync + Sized
+pub trait IntoWriterTransport<L>: Write + Sized
 where
     L: Display,
 {
@@ -384,7 +384,7 @@ where
 
 impl<W, L> IntoWriterTransport<L> for W
 where
-    W: Write + Send + Sync,
+    W: Write,
     L: Display,
 {
 }
@@ -394,13 +394,13 @@ pub trait AsWriterTransport<L>
 where
     L: Display,
 {
-    type Writer: Write + Send + Sync;
+    type Writer: Write;
     fn as_transport(&self) -> WriterTransportRef<'_, Self::Writer, L>;
 }
 
 impl<W, L> AsWriterTransport<L> for Mutex<W>
 where
-    W: Write + Send + Sync,
+    W: Write,
     L: Display,
 {
     type Writer = W;
