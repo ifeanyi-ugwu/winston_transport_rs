@@ -8,47 +8,53 @@
 //!
 //! Extension traits provide convenient `.into_writer()`, `.as_writer()`,
 //! `.into_transport()`, and `.as_transport()` methods.
+//!
+//! All adapters are completely generic over the log type `L`.
 
 use crate::Transport;
-use logform::{Format, LogInfo};
 use std::{
     cell::RefCell,
+    fmt::Display,
     io::{self, Write},
-    sync::{Arc, Mutex},
+    sync::Mutex,
 };
 
+/// A trait for creating log entries from strings.
+/// This allows the adapter to work with any log type.
+pub trait FromString {
+    fn from_string(s: String) -> Self;
+}
+
 /// owned adapter: takes ownership of a Transport and uses it as a Writer.
-/// Here, we assume `Transport<LogInfo>`.
-pub struct TransportWriter<T>
+/// Generic over any log type `L` that implements `FromString`.
+pub struct TransportWriter<T, L>
 where
-    T: Transport<LogInfo>,
+    T: Transport<L>,
+    L: FromString,
 {
     transport: T,
     buffer: Vec<u8>,
-    level: String,
+    _phantom: std::marker::PhantomData<L>,
 }
 
-impl<T> TransportWriter<T>
+impl<T, L> TransportWriter<T, L>
 where
-    T: Transport<LogInfo>,
+    T: Transport<L>,
+    L: FromString,
 {
     pub fn new(transport: T) -> Self {
         Self {
             transport,
             buffer: Vec::new(),
-            level: "INFO".to_string(),
+            _phantom: std::marker::PhantomData,
         }
-    }
-
-    pub fn with_level(mut self, level: impl Into<String>) -> Self {
-        self.level = level.into();
-        self
     }
 }
 
-impl<T> Write for TransportWriter<T>
+impl<T, L> Write for TransportWriter<T, L>
 where
-    T: Transport<LogInfo>,
+    T: Transport<L>,
+    L: FromString,
 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.buffer.extend_from_slice(buf);
@@ -59,8 +65,8 @@ where
                 .trim_end_matches(&['\r', '\n'][..])
                 .to_string();
 
-            let info = LogInfo::new(&self.level, line);
-            self.transport.log(info);
+            let log_entry = L::from_string(line);
+            self.transport.log(log_entry);
         }
         Ok(buf.len())
     }
@@ -70,7 +76,8 @@ where
         if !self.buffer.is_empty() {
             let leftover = String::from_utf8_lossy(&self.buffer).to_string();
             self.buffer.clear();
-            self.transport.log(LogInfo::new(&self.level, leftover));
+            let log_entry = L::from_string(leftover);
+            self.transport.log(log_entry);
         }
 
         self.transport
@@ -79,9 +86,10 @@ where
     }
 }
 
-impl<T> Drop for TransportWriter<T>
+impl<T, L> Drop for TransportWriter<T, L>
 where
-    T: Transport<LogInfo>,
+    T: Transport<L>,
+    L: FromString,
 {
     fn drop(&mut self) {
         let _ = self.flush();
@@ -89,30 +97,28 @@ where
 }
 
 /// borrowed adapter: borrows a Transport and uses it as a Writer.
-pub struct TransportWriterRef<'a, T>
+/// Generic over any log type `L` that implements `FromString`.
+pub struct TransportWriterRef<'a, T, L>
 where
-    T: Transport<LogInfo> + ?Sized,
+    T: Transport<L> + ?Sized,
+    L: FromString,
 {
     transport: &'a T,
     buffer: RefCell<Vec<u8>>,
-    level: String,
+    _phantom: std::marker::PhantomData<L>,
 }
 
-impl<'a, T> TransportWriterRef<'a, T>
+impl<'a, T, L> TransportWriterRef<'a, T, L>
 where
-    T: Transport<LogInfo> + ?Sized,
+    T: Transport<L> + ?Sized,
+    L: FromString,
 {
     pub fn new(transport: &'a T) -> Self {
         Self {
             transport,
             buffer: RefCell::new(Vec::new()),
-            level: "INFO".to_string(),
+            _phantom: std::marker::PhantomData,
         }
-    }
-
-    pub fn with_level(mut self, level: impl Into<String>) -> Self {
-        self.level = level.into();
-        self
     }
 
     // Helper to flush internal buffer emitting logs for each full line
@@ -127,15 +133,17 @@ where
             let line_str = String::from_utf8_lossy(&line_bytes)
                 .trim_end_matches(&['\r', '\n'][..])
                 .to_string();
-            self.transport.log(LogInfo::new(&self.level, line_str));
+            let log_entry = L::from_string(line_str);
+            self.transport.log(log_entry);
             start = 0; // dropped above
         }
     }
 }
 
-impl<'a, T> Write for TransportWriterRef<'a, T>
+impl<'a, T, L> Write for TransportWriterRef<'a, T, L>
 where
-    T: Transport<LogInfo> + ?Sized,
+    T: Transport<L> + ?Sized,
+    L: FromString,
 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         // Append to internal buffer
@@ -155,7 +163,8 @@ where
         let leftover = self.buffer.borrow_mut().drain(..).collect::<Vec<u8>>();
         if !leftover.is_empty() {
             let leftover_str = String::from_utf8_lossy(&leftover).to_string();
-            self.transport.log(LogInfo::new(&self.level, leftover_str));
+            let log_entry = L::from_string(leftover_str);
+            self.transport.log(log_entry);
         }
 
         self.transport
@@ -164,9 +173,10 @@ where
     }
 }
 
-impl<'a, T> Drop for TransportWriterRef<'a, T>
+impl<'a, T, L> Drop for TransportWriterRef<'a, T, L>
 where
-    T: Transport<LogInfo> + ?Sized,
+    T: Transport<L> + ?Sized,
+    L: FromString,
 {
     fn drop(&mut self) {
         let _ = self.flush();
@@ -174,49 +184,47 @@ where
 }
 
 /// owned adapter to use a Writer as a Transport.
-pub struct WriterTransport<W: Write + Send + Sync> {
+/// Generic over any log type `L` that implements `Display`.
+pub struct WriterTransport<W, L>
+where
+    W: Write + Send + Sync,
+    L: Display,
+{
     pub writer: Mutex<W>,
-    level: Option<String>,
-    format: Option<Arc<dyn Format<Input = LogInfo> + Send + Sync>>,
+    _phantom: std::marker::PhantomData<L>,
 }
 
-impl<W: Write + Send + Sync> WriterTransport<W> {
+impl<W, L> WriterTransport<W, L>
+where
+    W: Write + Send + Sync,
+    L: Display,
+{
     pub fn new(writer: W) -> Self {
         Self {
             writer: Mutex::new(writer),
-            level: None,
-            format: None,
+            _phantom: std::marker::PhantomData,
         }
-    }
-
-    pub fn with_level(mut self, level: String) -> Self {
-        self.level = Some(level);
-        self
-    }
-
-    pub fn with_format<F>(mut self, format: F) -> Self
-    where
-        F: Format<Input = LogInfo> + Send + Sync + 'static,
-    {
-        self.format = Some(Arc::new(format));
-        self
     }
 }
 
-impl<W: Write + Send + Sync> Transport<LogInfo> for WriterTransport<W> {
-    fn log(&self, info: LogInfo) {
+impl<W, L> Transport<L> for WriterTransport<W, L>
+where
+    W: Write + Send + Sync,
+    L: Display + Send + Sync,
+{
+    fn log(&self, info: L) {
         if let Ok(mut writer) = self.writer.lock() {
-            let _ = writeln!(writer, "{}", info.message);
+            let _ = writeln!(writer, "{}", info);
         }
     }
 
-    fn log_batch(&self, infos: Vec<LogInfo>) {
+    fn log_batch(&self, infos: Vec<L>) {
         if infos.is_empty() {
             return;
         }
         if let Ok(mut writer) = self.writer.lock() {
             for info in infos {
-                if let Err(e) = writeln!(writer, "{}", info.message) {
+                if let Err(e) = writeln!(writer, "{}", info) {
                     eprintln!(
                         "Failed to write log entry in batch to WriterTransport: {}",
                         e
@@ -228,14 +236,6 @@ impl<W: Write + Send + Sync> Transport<LogInfo> for WriterTransport<W> {
         }
     }
 
-    fn get_level(&self) -> Option<&String> {
-        self.level.as_ref()
-    }
-
-    fn get_format(&self) -> Option<Arc<dyn Format<Input = LogInfo> + Send + Sync>> {
-        self.format.clone()
-    }
-
     fn flush(&self) -> Result<(), String> {
         self.writer
             .lock()
@@ -248,7 +248,11 @@ impl<W: Write + Send + Sync> Transport<LogInfo> for WriterTransport<W> {
     }
 }
 
-impl<W: Write + Send + Sync> Drop for WriterTransport<W> {
+impl<W, L> Drop for WriterTransport<W, L>
+where
+    W: Write + Send + Sync,
+    L: Display,
+{
     fn drop(&mut self) {
         if let Ok(mut writer) = self.writer.lock() {
             let _ = writer.flush();
@@ -257,50 +261,48 @@ impl<W: Write + Send + Sync> Drop for WriterTransport<W> {
 }
 
 /// borrowed adapter for using a Writer as a Transport.
-pub struct WriterTransportRef<'a, W: Write + Send + Sync> {
+/// Generic over any log type `L` that implements `Display`.
+pub struct WriterTransportRef<'a, W, L>
+where
+    W: Write + Send + Sync,
+    L: Display,
+{
     writer: &'a Mutex<W>,
-    level: Option<String>,
-    format: Option<Arc<dyn Format<Input = LogInfo> + Send + Sync>>,
+    _phantom: std::marker::PhantomData<L>,
 }
 
-impl<'a, W: Write + Send + Sync> WriterTransportRef<'a, W> {
+impl<'a, W, L> WriterTransportRef<'a, W, L>
+where
+    W: Write + Send + Sync,
+    L: Display,
+{
     pub fn new(writer: &'a Mutex<W>) -> Self {
         Self {
             writer,
-            level: None,
-            format: None,
+            _phantom: std::marker::PhantomData,
         }
-    }
-
-    pub fn with_level(mut self, level: String) -> Self {
-        self.level = Some(level);
-        self
-    }
-
-    pub fn with_format<F>(mut self, format: F) -> Self
-    where
-        F: Format<Input = LogInfo> + Send + Sync + 'static,
-    {
-        self.format = Some(Arc::new(format));
-        self
     }
 }
 
-impl<'a, W: Write + Send + Sync> Transport<LogInfo> for WriterTransportRef<'a, W> {
-    fn log(&self, info: LogInfo) {
+impl<'a, W, L> Transport<L> for WriterTransportRef<'a, W, L>
+where
+    W: Write + Send + Sync,
+    L: Display + Send + Sync,
+{
+    fn log(&self, info: L) {
         if let Ok(mut writer) = self.writer.lock() {
-            let _ = writeln!(writer, "{}", info.message);
+            let _ = writeln!(writer, "{}", info);
         }
     }
 
-    fn log_batch(&self, infos: Vec<LogInfo>) {
+    fn log_batch(&self, infos: Vec<L>) {
         if infos.is_empty() {
             return;
         }
 
         if let Ok(mut writer) = self.writer.lock() {
             for info in infos {
-                if let Err(e) = writeln!(writer, "{}", info.message) {
+                if let Err(e) = writeln!(writer, "{}", info) {
                     eprintln!(
                         "Failed to write log entry in batch to WriterTransportRef: {}",
                         e
@@ -312,14 +314,6 @@ impl<'a, W: Write + Send + Sync> Transport<LogInfo> for WriterTransportRef<'a, W
         }
     }
 
-    fn get_level(&self) -> Option<&String> {
-        self.level.as_ref()
-    }
-
-    fn get_format(&self) -> Option<Arc<dyn Format<Input = LogInfo> + Send + Sync>> {
-        self.format.clone()
-    }
-
     fn flush(&self) -> Result<(), String> {
         self.writer
             .lock()
@@ -332,7 +326,11 @@ impl<'a, W: Write + Send + Sync> Transport<LogInfo> for WriterTransportRef<'a, W
     }
 }
 
-impl<'a, W: Write + Send + Sync> Drop for WriterTransportRef<'a, W> {
+impl<'a, W, L> Drop for WriterTransportRef<'a, W, L>
+where
+    W: Write + Send + Sync,
+    L: Display,
+{
     fn drop(&mut self) {
         if let Ok(mut writer) = self.writer.lock() {
             let _ = writer.flush();
@@ -341,52 +339,73 @@ impl<'a, W: Write + Send + Sync> Drop for WriterTransportRef<'a, W> {
 }
 
 /// extension trait for converting an owned transport to a writer.
-pub trait IntoTransportWriter {
-    fn into_writer(self) -> TransportWriter<Self>
-    where
-        Self: Transport<LogInfo> + Sized,
-    {
+pub trait IntoTransportWriter<L>: Transport<L> + Sized
+where
+    L: FromString,
+{
+    fn into_writer(self) -> TransportWriter<Self, L> {
         TransportWriter::new(self)
     }
 }
 
 /// extension trait for converting a borrowed transport to a writer.
-pub trait AsTransportWriter {
-    fn as_writer(&self) -> TransportWriterRef<'_, Self>
-    where
-        Self: Transport<LogInfo> + Sized;
-}
-
-impl<T> IntoTransportWriter for T where T: Transport<LogInfo> {}
-
-impl<T> AsTransportWriter for T
+pub trait AsTransportWriter<L>: Transport<L>
 where
-    T: Transport<LogInfo>,
+    L: FromString,
 {
-    fn as_writer(&self) -> TransportWriterRef<'_, Self> {
+    fn as_writer(&self) -> TransportWriterRef<'_, Self, L> {
         TransportWriterRef::new(self)
     }
 }
 
+impl<T, L> IntoTransportWriter<L> for T
+where
+    T: Transport<L>,
+    L: FromString,
+{
+}
+
+impl<T, L> AsTransportWriter<L> for T
+where
+    T: Transport<L>,
+    L: FromString,
+{
+}
+
 /// trait to convert an owned writer into a transport.
-pub trait IntoWriterTransport: Write + Send + Sync + Sized {
-    fn into_transport(self) -> WriterTransport<Self> {
+pub trait IntoWriterTransport<L>: Write + Send + Sync + Sized
+where
+    L: Display,
+{
+    fn into_transport(self) -> WriterTransport<Self, L> {
         WriterTransport::new(self)
     }
 }
 
-impl<W: Write + Send + Sync> IntoWriterTransport for W {}
-
-/// extension trait for converting a borrowed writer to a transport.
-pub trait AsWriterTransport {
-    type Writer: Write + Send + Sync;
-    fn as_transport(&self) -> WriterTransportRef<'_, Self::Writer>;
+impl<W, L> IntoWriterTransport<L> for W
+where
+    W: Write + Send + Sync,
+    L: Display,
+{
 }
 
-impl<W: Write + Send + Sync> AsWriterTransport for Mutex<W> {
+/// extension trait for converting a borrowed writer to a transport.
+pub trait AsWriterTransport<L>
+where
+    L: Display,
+{
+    type Writer: Write + Send + Sync;
+    fn as_transport(&self) -> WriterTransportRef<'_, Self::Writer, L>;
+}
+
+impl<W, L> AsWriterTransport<L> for Mutex<W>
+where
+    W: Write + Send + Sync,
+    L: Display,
+{
     type Writer = W;
 
-    fn as_transport(&self) -> WriterTransportRef<'_, W> {
+    fn as_transport(&self) -> WriterTransportRef<'_, W, L> {
         WriterTransportRef::new(self)
     }
 }
@@ -394,12 +413,29 @@ impl<W: Write + Send + Sync> AsWriterTransport for Mutex<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use logform::LogInfo;
     use std::sync::{Arc, Mutex};
+
+    // Example log type for testing
+    #[derive(Clone, Debug, PartialEq)]
+    struct TestLog {
+        message: String,
+    }
+
+    impl FromString for TestLog {
+        fn from_string(s: String) -> Self {
+            Self { message: s }
+        }
+    }
+
+    impl Display for TestLog {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.message)
+        }
+    }
 
     #[derive(Clone)]
     struct MockTransport {
-        messages: Arc<Mutex<Vec<String>>>,
+        messages: Arc<Mutex<Vec<TestLog>>>,
     }
 
     impl MockTransport {
@@ -409,14 +445,14 @@ mod tests {
             }
         }
 
-        fn get_messages(&self) -> Vec<String> {
+        fn get_messages(&self) -> Vec<TestLog> {
             self.messages.lock().unwrap().clone()
         }
     }
 
-    impl Transport<LogInfo> for MockTransport {
-        fn log(&self, info: LogInfo) {
-            self.messages.lock().unwrap().push(info.message);
+    impl Transport<TestLog> for MockTransport {
+        fn log(&self, info: TestLog) {
+            self.messages.lock().unwrap().push(info);
         }
     }
 
@@ -451,38 +487,38 @@ mod tests {
     fn test_owned_transport_to_writer() {
         let transport = MockTransport::new();
         let transport_clone = transport.clone();
-        let mut writer = transport.into_writer();
+        let mut writer: TransportWriter<_, TestLog> = transport.into_writer();
 
         writeln!(writer, "Test message 1").unwrap();
         writeln!(writer, "Test message 2").unwrap();
 
         let messages = transport_clone.get_messages();
         assert_eq!(messages.len(), 2);
-        assert!(messages[0].contains("Test message 1"));
-        assert!(messages[1].contains("Test message 2"));
+        assert_eq!(messages[0].message, "Test message 1");
+        assert_eq!(messages[1].message, "Test message 2");
     }
 
     #[test]
     fn test_borrowed_transport_to_writer() {
         let transport = MockTransport::new();
-        let mut writer = transport.as_writer();
+        let mut writer: TransportWriterRef<'_, _, TestLog> = transport.as_writer();
 
         writeln!(writer, "Borrowed message 1").unwrap();
         writeln!(writer, "Borrowed message 2").unwrap();
 
         let messages = transport.get_messages();
         assert_eq!(messages.len(), 2);
-        assert!(messages[0].contains("Borrowed message 1"));
-        assert!(messages[1].contains("Borrowed message 2"));
+        assert_eq!(messages[0].message, "Borrowed message 1");
+        assert_eq!(messages[1].message, "Borrowed message 2");
     }
 
     #[test]
     fn test_owned_writer_to_transport() {
         let buffer = TestBuffer::new();
-        let transport = buffer.into_transport();
+        let transport: WriterTransport<_, TestLog> = buffer.into_transport();
 
-        transport.log(LogInfo::new("INFO", "Test log 1"));
-        transport.log(LogInfo::new("INFO", "Test log 2"));
+        transport.log(TestLog::from_string("Test log 1".to_string()));
+        transport.log(TestLog::from_string("Test log 2".to_string()));
 
         let writer_guard = transport.writer.lock().unwrap();
         let content = writer_guard.contents_as_string();
@@ -493,10 +529,10 @@ mod tests {
     #[test]
     fn test_borrowed_writer_to_transport() {
         let test_buffer = Mutex::new(TestBuffer::new());
-        let transport_ref = test_buffer.as_transport();
+        let transport_ref: WriterTransportRef<'_, _, TestLog> = test_buffer.as_transport();
 
-        transport_ref.log(LogInfo::new("INFO", "Borrowed log 1"));
-        transport_ref.log(LogInfo::new("INFO", "Borrowed log 2"));
+        transport_ref.log(TestLog::from_string("Borrowed log 1".to_string()));
+        transport_ref.log(TestLog::from_string("Borrowed log 2".to_string()));
         transport_ref.flush().unwrap();
 
         let buffer_guard = test_buffer.lock().unwrap();
