@@ -302,6 +302,12 @@ impl LogQuery {
     }
 }
 
+impl Default for LogQuery {
+    fn default() -> Self {
+        LogQuery::new()
+    }
+}
+
 #[cfg(test)]
 mod test {
     use chrono::{NaiveDate, TimeZone};
